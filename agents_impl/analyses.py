@@ -233,7 +233,8 @@ def fabriquer_inferentiel(ctx: Contexte):
                 resultats[ana["id"]] = {
                     "op_retenue": op, "version": catalogue.OPS[op]["version"],
                     "role": ana["role"], "par_groupe": sous,
-                    "entrees": {"definition": ana["definition"]}}
+                    "entrees": {"definition": ana.get(
+                        "definition", f">= {seuil} grade reaction")}}
                 continue
             res = ctrl.executer(catalogue.OPS[op]["fn"], op,
                                 catalogue.OPS[op]["version"], **entrees_op)

@@ -19,6 +19,7 @@ déterministe), documente et propose ; l'humain valide aux étapes critiques (fa
 | `core/` | Socle : audit append-only chaîné SHA-256 (`audit.py`), store d'artefacts immutables versionnés (`store.py`), état + checkpoints (`state.py`), bus de messages typés (`bus.py`), gates humains fail-closed (`gates.py`), exceptions (`exceptions.py`) |
 | `stats_catalogue/` | Moteur de calcul déterministe : distributions pures (`dist.py`), catalogue d'ops versionné (`ops.py` — Welch, Mann-Whitney, χ², Fisher exact, McNemar, Kruskal-Wallis, Anderson-Darling, IC Wilson/Clopper-Pearson, MoS…), double exécution contrôlée par hash (`controller.py`) |
 | `agents_impl/` | 12 agents MVP : compréhension, dataqualité (score DQ), biostat (SAP), EDA, biais, hypothèses (fallbacks pré-spécifiés), manquants, anomalies, inférentiel (verrou SAP), sécurité (MoS/signaux), conformité (règles citées), redaction (faits/inférences/reco séparés), relecture (recalcul indépendant), exporteur |
+| `llm/` | Intégration LLM derrière contrats (`docs/LLM_INTEGRATION.md`) : providers HTTP compatible OpenAI + simulé, génération contrainte par schéma (enum = catalogue d'ops), rétroaction bornée, repli déterministe journalisé, audit hashé prompt/réponse |
 | `orchestration/` | Machine à états (`orchestrator.py`) : contrats vérifiés, retries bornés sur erreurs techniques uniquement, 10 règles de blocage fail-closed, verrou SAP SHA-256, registre des décisions ; câblage des 14 étapes (`pipeline.py`) ; moteur de scores RA/CC plafonnés (`scores.py`) |
 | `demo/` | Cas d'usage synthétique déterministe (`jeu_donnees.py`) + démo de bout en bout (`run_demo.py`) |
 | `tests/` | 39 tests : valeurs de référence stats, audit/tamper, gates, parcours nominal, 5 scénarios de blocage, contre-analyse relecture |
@@ -26,12 +27,14 @@ déterministe), documente et propose ; l'humain valide aux étapes critiques (fa
 ## Exécuter
 
 ```bash
-python3 demo/run_demo.py                    # pipeline complet sur données synthétiques
-python3 -m unittest discover -s tests      # batterie de tests
+python3 demo/run_demo.py                                 # pipeline complet (mode déterministe)
+AGENT_STAT_LLM_MODE=llm-simule python3 demo/run_demo.py  # même pipeline, agents LLM (simulés)
+python3 -m unittest discover -s tests                    # 52 tests
 python3 - <<'EOF'
 from core.audit import JournalAudit
 print(JournalAudit.verifier("runtime/demo/audit.jsonl"))   # (True, n, 'chaîne intègre')
 EOF
+# mode réel : AGENT_STAT_LLM_MODE=http + AGENT_STAT_LLM_BASE_URL/API_KEY/MODEL
 ```
 
 La démo écrit dans `runtime/demo/` (ignoré par git) : store d'artefacts, journal d'audit

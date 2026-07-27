@@ -1,13 +1,23 @@
-"""Agent Biostatistique — génération du SAP (plan d'analyse statistique).
+"""Agent Biostatistique — rédaction du SAP (plan d'analyse statistique).
 
-MVP : gabarits déterministes par type d'étude, reconduisant uniquement des
-opérations du catalogue. Phase 1 : rédaction LLM contrainte au catalogue +
-contre-vérification schéma. Le SAP est ensuite verrouillé (hash) au gate G3.
+Deux chemins, MÊME artefact verrouillable :
+- `llm` : le provider propose les analyses via schéma contraint dont l'enum `op`
+  EST le catalogue fermé ; l'agent revérifie ensuite les RÈGLES MÉTIER de façon
+  déterministe (une seule primaire, variables existantes, fallback obligatoire
+  pour les tests paramétriques). Toute violation ⇒ repli gabarit journalisé ;
+- `deterministe` (défaut) : gabarits par type d'étude.
+
+Le LLM ne choisit JAMAIS une méthode hors catalogue et ne CALCULE rien.
 """
 from __future__ import annotations
 
 from agents_impl.base import Contexte, depot, sortie
+from core.exceptions import ErreurLogique
 from core.state import Etat
+from llm import prompts, schemas
+from llm.exceptions import ErreurLLM
+from llm.generation import generer_contraint
+from stats_catalogue.ops import OPS
 
 
 def _gabarit_usage_cosmetique(spec: dict, dq: dict) -> list[dict]:
@@ -19,8 +29,7 @@ def _gabarit_usage_cosmetique(spec: dict, dq: dict) -> list[dict]:
         {"id": "A1", "role": "primaire", "op": "t_test_welch", "var": ep,
          "par": groupe, "contraste": spec.get("contraste", ["produit", "controle"]),
          "hypotheses": ["normalite_par_groupe"],
-         "fallback": {"si": "non_normal", "op": "mann_whitney"},
-         "multiplicite": "primaire_unique"},
+         "fallback": {"si": "non_normal", "op": "mann_whitney"}},
         {"id": "A2", "role": "safety", "op": "proportion_exacte",
          "var": spec.get("var_reaction", "reaction_grade"),
          "definition": f">= {spec.get('seuil_grade_reaction', 2)}",
@@ -39,35 +48,95 @@ GABARITS = {
     "cas_temoins": _gabarit_observationnel,
 }
 
+OPS_PARAMETRIQUES = {"t_test_welch"}
 
-def fabriquer(ctx: Contexte):
+
+def _verifier_regles_metier(analyses: list[dict], spec: dict) -> None:
+    """Contre-vérification déterministe de toute proposition LLM."""
+    if sum(1 for a in analyses if a.get("role") == "primaire") != 1:
+        raise ErreurLogique("exactement UNE analyse primaire exigée")
+    variables = set(spec.get("variables", {}))
+    for a in analyses:
+        if a["op"] not in OPS:
+            raise ErreurLogique(f"{a['id']} : op hors catalogue")
+        if a["var"] not in variables:
+            raise ErreurLogique(f"{a['id']} : variable {a['var']!r} absente de la spec")
+        if a["op"] in OPS_PARAMETRIQUES and not a.get("fallback"):
+            raise ErreurLogique(f"{a['id']} : test paramétrique sans fallback "
+                                "pré-spécifié")
+        if a.get("fallback") and a["fallback"]["op"] not in OPS:
+            raise ErreurLogique(f"{a['id']} : fallback hors catalogue")
+
+
+def _defauts(analyses: list[dict], spec: dict) -> list[dict]:
+    groupe = spec.get("variable_groupe", "groupe")
+    for a in analyses:
+        a.setdefault("par", groupe)
+        if a["op"] in OPS_PARAMETRIQUES or a["op"] == "mann_whitney":
+            a.setdefault("contraste", spec.get("contraste",
+                                               ["produit", "controle"]))
+    return analyses
+
+
+def fabriquer(ctx: Contexte, llm=None):
     ctx.producteur = "agent.biostat"
 
     def agent(etat: Etat, entrees: dict) -> dict:
         spec, dq = entrees["spec"], entrees["dq"]
         fabrique = GABARITS.get(etat.type_etude)
         if fabrique is None:
-            from core.exceptions import ErreurLogique
             raise ErreurLogique(
                 f"pas de gabarit SAP MVP pour {etat.type_etude!r} → escalade humaine")
+
         analyses = fabrique(spec, dq)
+        multiplicite = ("gatekeeping : primaire d'abord ; Holm si secondaires "
+                        "confirmatoires ; exploratoire étiqueté (plafond CC 0,5)")
+        strat_manquants = ("cas complets si taux ≤ 5 % ; sinon MI requise "
+                           "(hors MVP → escalade)")
+        mode, assumptions = "gabarit_deterministe", [
+            "gabarit déterministe conforme au catalogue d'ops"]
+
+        if llm is not None:
+            try:
+                dq_resume = {"score_dq": dq.get("score_dq"),
+                             "n": dq.get("n_lignes")}
+                obj, meta_gen = generer_contraint(
+                    llm, tache="proposition_sap",
+                    systeme=prompts.systeme_biostat(),
+                    utilisateur=prompts.utilisateur_biostat(
+                        etat.type_etude, spec, dq_resume),
+                    schema=schemas.PROPOSITION_SAP)
+                propo = _defauts(list(obj["analyses"]), spec)
+                _verifier_regles_metier(propo, spec)      # contre-vérification
+                analyses = propo
+                multiplicite = obj["gestion_multiplicite"]
+                strat_manquants = obj["gestion_manquants_strategie"]
+                mode = "llm"
+                assumptions = ["analyses proposées par LLM, revalidées "
+                               "mécaniquement (catalogue + règles métier)"]
+                ctx.audit.log("llm", "GENERATION", meta_gen)
+            except (ErreurLLM, ErreurLogique) as e:
+                assumptions.append(f"proposition LLM rejetée ({e}) — repli "
+                                   "gabarit déterministe")
+                ctx.audit.log("agent.biostat", "REPLI_LLM", {"erreur": str(e)[:300]})
+
         sap = {
-            "version_gabarit": "sap-1.0.0",
+            "version_gabarit": "sap-1.0.0", "mode_proposition": mode,
             "study_id": etat.study_id, "type_etude": etat.type_etude,
             "endpoint_principal": {
-                "variable": spec["endpoint_principal"],
-                "unique": True,
+                "variable": spec["endpoint_principal"], "unique": True,
                 "justification": "critère pré-spécifié au protocole"},
             "endpoints_secondaires": spec.get("endpoints_secondaires", []),
             "population_analyse": {
-                "definition": spec.get("population",
-                                       "tous sujets avec mesure du critère principal"),
+                "definition": spec.get(
+                    "population",
+                    "tous sujets avec mesure du critère principal"),
                 "exclusions": "règles pré-spécifiées uniquement (journal dédié)"},
             "analyses": analyses,
-            "gestion_multiplicite": "gatekeeping : primaire d'abord ; Holm si secondaires confirmatoires ; exploratoire étiqueté (plafond CC 0,5)",
-            "gestion_manquants": {
-                "strategie": "cas complets si taux ≤ 5 % ; sinon MI requise (hors MVP → escalade)",
-                "sensibilite": ["analyse sans outliers critiques documentés (agent anomalie)"]},
+            "gestion_multiplicite": multiplicite,
+            "gestion_manquants": {"strategie": strat_manquants,
+                                  "sensibilite": ["analyse sans outliers "
+                                                  "critiques documentés"]},
             "estimand": ({"strategie_evenements_intercurrents": "treatment_policy",
                           "cadre": "ICH E9(R1)"}
                          if etat.type_etude == "essai_randomise" else None),
@@ -76,9 +145,9 @@ def fabriquer(ctx: Contexte):
             "pre_enregistrement": "hash du SAP déposé au verrou G3 avant tout calcul",
         }
         art = depot(ctx, etat.study_id, "sap", "sap", sap,
-                    utilisant=[entrees.get("intention_ref"), entrees.get("dq_ref")])
+                    utilisant=[entrees.get("intention_ref"),
+                               entrees.get("dq_ref")])
         return sortie(confidence=0.9, artefacts=[art],
-                      assumptions=["gabarit déterministe conforme au catalogue d'ops",
-                                   "les opérations hors catalogue auraient bloqué"],
+                      assumptions=assumptions,
                       sap=sap, sap_ref=art.ref, sap_sha256=art.sha256)
     return agent

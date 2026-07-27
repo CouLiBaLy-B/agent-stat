@@ -33,7 +33,9 @@ def main() -> int:
     etat = Etat(run_id="run-2026-07-27-0001", study_id="COS-2026-014",
                 domaine="cosmetique", seed=20260727)
 
+    import os
     print("== Lancement du pipeline (test d'usage cosmétique démo) ==")
+    print(f"Mode LLM : {os.environ.get('AGENT_STAT_LLM_MODE', 'off')}")
     etat = run_pipeline(etat, sys_, generer())
 
     print(f"\nStatut final        : {etat.statut} (phase {etat.phase})")

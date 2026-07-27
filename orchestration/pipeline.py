@@ -28,6 +28,8 @@ from core.exceptions import ErreurLogique
 from core.gates import FichierDecisionsProvider, GestionnaireGates
 from core.state import Etat, Phase
 from core.store import StoreArtefacts
+from llm.exceptions import ErreurLLM
+from llm.provider import provider_depuis_env
 from orchestration import scores as moteur_scores
 from orchestration.orchestrator import Orchestrateur
 
@@ -42,20 +44,32 @@ ALLERS_RETOURS_MAX = 2
 
 
 def construire_systeme(racine_runtime: str, decisions_path: str,
-                       backoff_base_s: float = 0.0):
-    """Assemble l'environnement d'exécution (MVP : fichiers locaux)."""
+                       backoff_base_s: float = 0.0, llm="env"):
+    """Assemble l'environnement d'exécution (MVP : fichiers locaux).
+
+    `llm` : provider injecté, None (forcé off), ou "env" — résolu via
+    `AGENT_STAT_LLM_MODE ∈ {off, llm-simule, http}` (cf. docs/LLM_INTEGRATION.md).
+    """
     racine = Path(racine_runtime)
     store = StoreArtefacts(racine / "store")
     audit = JournalAudit(racine / "audit.jsonl")
+    if llm == "env":
+        try:
+            llm = provider_depuis_env()
+        except ErreurLLM as e:
+            audit.log("systeme", "LLM_MODE_ERREUR", {"erreur": str(e)})
+            llm = None
+    audit.log("systeme", "LLM_MODE",
+              {"provider": llm.identite if llm else "off (deterministe)"})
     bus = Bus()
     gates = GestionnaireGates(FichierDecisionsProvider(decisions_path),
                               audit, ROLES_GATES)
     ctx = Contexte(store=store, audit=audit,
                    checkpoints_dir=str(racine / "checkpoints"))
     registry = {
-        "agent.comprehension": comprehension.fabriquer(ctx),
+        "agent.comprehension": comprehension.fabriquer(ctx, llm=llm),
         "agent.dataqualite":   dataqualite.fabriquer(ctx),
-        "agent.biostat":       biostat.fabriquer(ctx),
+        "agent.biostat":       biostat.fabriquer(ctx, llm=llm),
         "agent.eda":           analyses.fabriquer_eda(ctx),
         "agent.biais":         analyses.fabriquer_biais(ctx),
         "agent.hypotheses":    analyses.fabriquer_hypotheses(ctx),
