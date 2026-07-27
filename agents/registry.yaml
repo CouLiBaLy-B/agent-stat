@@ -1,0 +1,209 @@
+version: "1.0.0"
+description: >
+  Registre des agents du système multi-agents statistique médical & cosmétique.
+  Chaque agent : rôle unique, entrées/sorties schématisées (JSON Schema référencé),
+  outils en allowlist, critères mesurables de succès/échec, conditions d'escalade humaine.
+  Aucun agent ne communique en direct avec un autre : tout transite par l'orchestrateur.
+conventions:
+  confidence: "0..1, obligatoire sur toute sortie"
+  assumptions: "liste d'hypothèses déclarées, obligatoire (peut être vide)"
+  contradictions: "toute contradiction détectée DOIT être remontée dans le message"
+  namespace_ecriture: "un agent n'écrit que sous art://{son_type}/{study_id}/"
+  message_envelope_schema: "schemas/envelope.schema.json"
+
+agents:
+
+  orchestrateur:
+    id: "agent.orchestrateur"
+    mission: "Séquencer le pipeline, router les tâches, arbitrer les conflits, appliquer retries et blocages, déclencher les gates humains. Ne produit AUCUN contenu métier."
+    inputs: ["état JSON (schemas/etat.schema.json)", "événements du bus", "messages agents"]
+    outputs: ["plan d'exécution", "décisions de routage/arbitrage (registre des décisions)", "transitions d'état", "ordres de blocage"]
+    outils: ["state_machine", "bus_evenements", "registre_decisions", "journal_audit", "planificateur_gates"]
+    criteres_succes: ["100 % des transitions conformes à la machine à états", "0 étape exécutée sans préconditions satisfaites", "latence de routage < 5 s"]
+    criteres_echec: ["état JSON invalide après transition", "deadlock détecté", "perte d'un message (non-ack)"]
+    escalade_humaine: ["conflit d'agents non résolu après 2 allers-retours", "3 retries échoués sur une étape", "gate bloquant expiré (SLA)", "toute situation non cataloguée"]
+    notes: "Composant déterministe (code), PAS un LLM. C'est la seule entité autorisée à modifier phase_pipeline."
+
+  comprehension_besoin:
+    id: "agent.comprehension"
+    mission: "Transformer demande + documents entrants en fiche d'intention structurée : objectif, question de recherche (type PICO), type d'étude pressenti, endpoints pressentis, contexte réglementaire, livrables demandés."
+    inputs: ["documents bruts ingérés (art://raw/)", "brief utilisateur"]
+    outputs: ["art://intention/…/intention.json (type_etude_pressenti + confiance, endpoints_pressentis, contraintes, livrables)"]
+    outils: ["extracteur_documents (OCR/tables)", "classifieur_type_etude", "referentiel_taxonomie_etudes"]
+    criteres_succes: ["fiche conforme au schéma intention.schema.json", "type d'étude + confiance renseignés", "toutes les pièces reçues référencées par hash"]
+    criteres_echec: ["confiance qualification < 0.8", "documents contradictoires sur l'objectif", "pièce illisible après extraction"]
+    escalade_humaine: ["ambiguïté majeure sur l'objectif ou l'endpoint", "conflit entre brief et documents", "type d'étude hors taxonomie"]
+    interdictions: ["ne propose aucun test statistique", "ne modifie pas les données"]
+
+  conception_protocole:
+    id: "agent.protocole"
+    mission: "Structurer ou rédiger le protocole / plan de test : design, endpoints, population, critères inclusion/exclusion, procédures, fenêtres de visite, critères d'arrêt."
+    inputs: ["intention.json validé", "protocole entrant éventuel (art://raw/)", "gabarits protocolaires versionnés"]
+    outputs: ["art://protocole/…/protocole.json+md", "matrice critères↔mesures", "liste des éléments manquants critiques"]
+    outils: ["gabarits_protocole", "checklists_design (CONSORT/STROBE/SCCS-inspired)", "referentiel_endpoints"]
+    criteres_succes: ["checklist de complétude du design à 100 % ou écarts explicités", "endpoint principal identifiable et unique (ou hiérarchie)"]
+    criteres_echec: ["endpoint principal absent ou multiple non hiérarchisé", "critères d'exclusion non opérationnels"]
+    escalade_humaine: ["design non standard", "endpoint principal à choisir entre plusieurs candidats", "question éthique/consentement"]
+    interdictions: ["ne touche jamais aux données d'analyse", "ne promet aucune taille d'effet"]
+
+  biostatistique_sap:
+    id: "agent.biostat"
+    mission: "Rédiger le plan d'analyse statistique (SAP) ou le plan de tests : endpoints, populations d'analyse, méthodes, multiplicité, manquants, sensibilité, estimands (ICH E9(R1)). Produit le document verrouillé avant tout calcul."
+    inputs: ["protocole validé", "dq_report (pour faisabilité)", "dictionnaire des données", "catalogue d'opérations stats disponibles"]
+    outputs: ["art://sap/…/sap.json+md versionné", "plan de multiplicité", "stratégie manquants + sensibilité", "estimands structurés", "calcul de puissance/n"]
+    outils: ["catalogue_ops_stats (méta)", "calculateur_puissance (déterministe)", "gabarit_sap", "referentiel_methodes"]
+    criteres_succes: ["chaque test prévu ∈ catalogue d'ops", "stratégie manquants + ≥1 sensibilité par fragilité", "multiplicité explicite", "hash du SAP déposé pour verrouillage (G3)"]
+    criteres_echec: ["puissance a priori < 0.8 sans justification", "méthode hors catalogue (MVP)", "estimand ambigu sur endpoint primaire"]
+    escalade_humaine: ["design sans solution cataloguée", "marge d'équivalence/non-infériorité à définir", "stratégie d'estimand contestable", "toute déviation SAP demandée après verrouillage"]
+    interdictions: ["n'exécute aucun calcul sur les données réelles", "ne réordonne pas les endpoints après G3"]
+
+  nettoyage_qualite_donnees:
+    id: "agent.dataqualite"
+    mission: "Exécuter le référentiel de contrôles qualité (complétude, cohérence, doublons, outliers, temporalité, compatibilité variables, écart protocole/données) et produire le score de fiabilité DQ. Détecte et documente ; ne corrige que via règles déclaratives journalisées."
+    inputs: ["datasets ingérés", "protocole (attendus)", "référentiel de contrôles DQ versionné"]
+    outputs: ["art://dq/…/dq_report.json", "score DQ + détail par dimension", "liste d'anomalies actionnables (règle, gravité, lignes)", "journal des corrections déclaratives"]
+    outils: ["moteur_regles_dq (Great Expectations/Pandera)", "profileur_datasets", "detecteur_doublons (exact+fuzzy)"]
+    criteres_succes: ["100 % des contrôles du référentiel exécutés ou marqués N/A", "score DQ calculé selon formule versionnée", "0 correction hors journal"]
+    criteres_echec: ["DQ < 0.50", "complétude endpoint principal < 90 %", "doublons sujets > 2 % non résolus", "schéma dataset illisible"]
+    escalade_humaine: ["blocage G2", "correction ambiguë (plusieurs valeurs plausibles)", "suspicion de manipulation de données"]
+    interdictions: ["suppression silencieuse de lignes/valeurs", "imputation (réservée à l'agent manquants)"]
+
+  gestion_biais:
+    id: "agent.biais"
+    mission: "Identifier et graduer les biais : sélection, mesure, reporting, confusion, temporalité (immortal time, lead time), attrition, écart protocole. Proposer des mitigations et des analyses de sensibilité associées."
+    inputs: ["intention + protocole", "dq_report", "eda_report", "plans d'échantillonnage"]
+    outputs: ["art://biais/…/bias_report.json", "catalogue des biais détectés (preuve, gravité, mitigation)", "recommandations de stratification/ajustement"]
+    outils: ["comparateurs_inclus_vs_exclus (SMD)", "detecteur_deséquilibres_baseline", "checklists_biais_par_design"]
+    criteres_succes: ["checklist biais du design à 100 %", "chaque biais ≥ majeur associé à une mitigation ou une limite explicite"]
+    criteres_echec: ["biais critique non mitigeable (ex. confusion non mesurée clé)", "déséquilibre baseline SMD > 0.25 inexpliqué"]
+    escalade_humaine: ["biais critique remettant en cause la validité interne", "mitigation qui changerait le SAP (→ G3)"]
+    interdictions: ["aucune analyse causale concluante", "ne sélectionne pas de variables sur les données"]
+
+  controle_hypotheses:
+    id: "agent.hypotheses"
+    mission: "Vérifier les préconditions de chaque test planifié au SAP (normalité, homoscédasticité, indépendance, proportional hazards, chevauchement…) et appliquer l'arbre de fallback pré-spécifié."
+    inputs: ["sap verrouillé", "datasets gelés", "arbre de fallback du SAP"]
+    outputs: ["art://assumptions/…/assumptions.json (test → hypothèses → verdict → fallback retenu)"]
+    outils: ["tests_hypotheses (Shapiro, Levene, Schoenfeld…)", "diagnostics_graphiques (QQ-plot…)"]
+    criteres_succes: ["100 % des tests du SAP ont un verdict d'hypothèses", "fallbacks pris uniquement dans l'arbre pré-spécifié"]
+    criteres_echec: ["hypothèse violée sans fallback pré-spécifié", "diagnostic impossible (données insuffisantes)"]
+    escalade_humaine: ["fallback absent de l'arbre (déviation SAP → G3)", "contradiction entre diagnostics"]
+    interdictions: ["inventer un fallback non pré-spécifié", "choisir le test selon la p-value obtenue"]
+
+  analyse_exploratoire:
+    id: "agent.eda"
+    mission: "Décrire et profiler les données : distributions, tableaux, visualisations, dictionnaire des données. Strictement descriptif — aucune inférence."
+    inputs: ["datasets validés G2", "dictionnaire des variables"]
+    outputs: ["art://eda/…/eda_report.json+md", "dictionnaire des données enrichi", "graphiques versionnés"]
+    outils: ["profileur", "generateur_graphiques (matplotlib/plotly hors ligne)"]
+    criteres_succes: ["toutes les variables du SAP profilées", "unités et codages documentés"]
+    criteres_echec: ["variables du SAP absentes du profil", "graphique non reproductible (seed/params manquants)"]
+    escalade_humaine: ["impossible via propre périmètre → remonte à dataqualite/biais"]
+    interdictions: ["AUCUN test inférentiel, AUCUNE p-value", "pas d'accès au moteur inférentiel (enforce RBAC outils)"]
+
+  analyse_inferentielle:
+    id: "agent.inferentiel"
+    mission: "Exécuter uniquement le SAP validé et verrouillé via le catalogue d'opérations statistiques, en sandbox, seed fixée, double exécution de contrôle. Consigner toute déviation."
+    inputs: ["sap verrouillé (hash contrôlé)", "assumptions.json", "datasets gelés (snapshot hash)", "verrous G3"]
+    outputs: ["art://results/…/results_inferential.json (estimations, IC 95 %, tailles d'effet, p-values, diagnostics)", "journal_exécution (ops, versions, seed, hashes)"]
+    outils: ["catalogue_ops_stats (sandboxé)", "double_execution_controller", "registre_deviations_sap"]
+    criteres_succes: ["hashes des 2 exécutions identiques", "1:1 entre opérations exécutées et SAP", "IC + taille d'effet pour chaque estimation", "journal complet"]
+    criteres_echec: ["divergence double exécution", "opération hors SAP", "non-convergence modèle", "artefact non schématisé"]
+    escalade_humaine: ["déviation SAP jugée nécessaire (→ G3 revalidation)", "non-convergence sans fallback", "résultat interne incohérent (ex. IC impossible)"]
+    interdictions: ["calcul 'de tête' (tout passe par le catalogue)", "accès données avant verrouillage G3", "analyses supplémentaires non déclarées"]
+
+  gestion_manquants:
+    id: "agent.manquants"
+    mission: "Diagnostiquer le mécanisme de données manquantes (MCAR/MAR/MNAR), appliquer la stratégie du SAP (CC, MI, MMRM…), produire les analyses de sensibilité MNAR prévues (Δ-adjustment, J2R/CIR, tipping point)."
+    inputs: ["sap (stratégie manquants)", "datasets gelés", "dq_report (taux par variable/strate)"]
+    outputs: ["art://missingness/…/missingness.json (mécanisme, méthode, paramètres, m, pooling)", "sensibilités MNAR tabulées"]
+    outils: ["tests_mecanisme (Little…)", "imputeur_multiple (PMM/MCMC, seed fixée)", "pooling_rubin"]
+    criteres_succes: ["mécanisme documenté par variable clé", "m ≥ taux manquant × 100 (règle pratique)", "sensibilité(s) exécutée(s) si SAP l'exige"]
+    criteres_echec: ["taux manquants endpoint principal > 40 %", "suspicion MNAR forte sans sensibilité couvrante", "imputation non reproductible"]
+    escalade_humaine: ["MNAR fort probable (choix de plausible values scenarii)", "stratégie SAP inapplicable aux données réelles"]
+    interdictions: ["imputation unique silencieuse", "modifier le mécanisme sans le consigner"]
+
+  detection_anomalies:
+    id: "agent.anomalies"
+    mission: "Détecter valeurs aberrantes (uni/multivariées), doublons partiels résiduels, patterns impossibles, signaux de fraude statistique (Benford, duplications de séries, distributions trop régulières)."
+    inputs: ["datasets gelés", "dq_report", "eda_report"]
+    outputs: ["art://anomalies/…/anomalies.json (détection → règle déclenchante → gravité → statut)"]
+    outils: ["detecteurs_outliers (IQR, z-robuste MAD, isolation forest)", "tests_fraudes (Benford, patterns)"]
+    criteres_succes: ["100 % des détections ont règle + gravité + statut (expliquée/inexpliquée)", "aucune suppression (détection seule)"]
+    criteres_echec: ["outlier critique endpoint principal sans explication", "signal de fraude niveau élevé"]
+    escalade_humaine: ["suspicion de fraude/manipulation (blocage + enquête data management)", "décision d'exclusion demandée hors règles pré-spécifiées"]
+    interdictions: ["exclure des données (décision humaine sur règle pré-spécifiée uniquement)"]
+
+  securite_tolerance:
+    id: "agent.securite"
+    mission: "Synthétiser innocuité/tolérance : incidences d'événements/réactions avec IC exacts, gradation de sévérité, scores cutanés, calculs MoS = NOAEL/SED par ingrédient (cosmétique), liste de signaux gradués."
+    inputs: ["données safety (AE, scores cutanés, réactions)", "données ingrédients/NOAEL/SED", "référentiel gradation", "résultats inférentiels safety"]
+    outputs: ["art://safety/…/safety_report.json", "signaux (gravo×proba×détectabilité)", "table MoS par ingrédient", "recommandations tests complémentaires"]
+    outils: ["calcul_incidence_ic_exact", "moteur_mos (référentiel SCCS structuré)", "matrice_risque"]
+    criteres_succes: ["100 % des AE codés et comptés par bras/groupe", "MoS calculée pour chaque ingrédient à NOAEL connu (ou incertitude étiquetée)", "chaque signal a une preuve chiffrée"]
+    criteres_echec: ["signal grade ≥ 2 sans revue", "MoS < 100", "données safety incomplètes (AE non réconciliés)"]
+    escalade_humaine: ["TOUT signal grade ≥ 2 → toxicologue/safety assessor (blocage G4)", "MoS < 100", "extrapolation population sensible (enfants, femmes enceintes)", "NOAEL manquant (incertitude)"]
+    interdictions: ["conclure 'sûr' sans couverture complète des endpoints safety", "lisser un signal défavorable"]
+
+  conformite_reglementaire:
+    id: "agent.conformite"
+    mission: "Appliquer le moteur de règles réglementaires (annexes II–VI cosmétiques UE, restrictions, données requises par type d'étude, priorité méthodes alternatives validées), détecter zones d'incertitude, données insuffisantes, signaux de risque, besoins de revue experte."
+    inputs: ["protocole + résultats + safety_report", "composition INCI", "référentiel réglementaire structuré versionné", "base documentaire (RAG cité)"]
+    outputs: ["art://compliance/…/compliance_report.json (règle → statut OK/KO/INCERTAIN → preuve → référence)", "liste des manques réglementaires", "revues expertes requises"]
+    outils: ["moteur_regles_reglementaires (déterministe)", "referentiel_INCI_annexes", "rag_documentaire (citations obligatoires)"]
+    criteres_succes: ["100 % des règles applicables évaluées avec preuve", "0 règle KO sans escalade", "chaque affirmation réglementaire citée (référence + version du corpus)"]
+    criteres_echec: ["substance annexe II détectée", "restriction III–VI dépassée", "données requises absentes pour le type d'étude", "corpus réglementaire non à jour"]
+    escalade_humaine: ["toute règle KO ou INCERTAIN persistant", "interprétation de texte réglementaire non couverte par le moteur", "nouvel ingrédient sans dossier", "claim sans substantiation suffisante"]
+    interdictions: ["interpréter la réglementation sans citer le texte", "valider une conformité sur données insuffisantes (→ verdict 'insuffisant')"]
+
+  redaction_rapport:
+    id: "agent.redaction"
+    mission: "Assembler le rapport dans les gabarits versionnés en séparant strictement faits / inférences / recommandations, chaque chiffre citant son artefact + hash, limites obligatoires, lexique contrôlé (association ≠ causalité)."
+    inputs: ["tous les artefacts validés", "gabarits par type de sortie", "lexique contrôlé", "scores DQ/RA/CC"]
+    outputs: ["art://report/…/rapport_draft.json+md (résumé exécutif, résultats, risques, actions, limites, validations requises)"]
+    outils: ["moteur_gabarits", "verificateur_references_chiffrees", "lexique_controle (anti sur-claim)"]
+    criteres_succes: ["100 % des chiffres cités avec référence + hash", "sections limites/hypothèses non vides", "3 canaux faits/inférences/recommandations respectés", "verbalisation du score CC respectée"]
+    criteres_echec: ["chiffre sans source", "tournure causale non autorisée", "conclusion plus forte que CC ne l'autorise"]
+    escalade_humaine: ["incohérence détectée entre artefacts sources", "gabarit inadapté au cas d'usage"]
+    interdictions: ["introduire un chiffre absent des artefacts", "masquer un résultat défavorable", "conclure si CC < 0.40"]
+
+  relecture_critique:
+    id: "agent.relecture"
+    mission: "Contre-analyser le brouillon : recalcul indépendant de chaque chiffre cité, chasse aux conclusions non supportées / sur-claims, vérification citations, cohérence SAP↔résultats, présence des limites."
+    inputs: ["rapport_draft", "artefacts référencés", "sap verrouillé"]
+    outputs: ["art://critique/…/critique.json (objections numérotées : type, extrait, preuve, gravité, bloquante oui/non)", "verdict global"]
+    outils: ["recalculateur_independant (sandbox)", "diff_sap_resultats", "detecteur_surclaim"]
+    criteres_succes: ["100 % des chiffres recalculés (ou marqués non vérifiables = objection)", "toute objection a une preuve"]
+    criteres_echec: ["chiffre non reproduit", "conclusion non supportée détectée", "limite obligatoire absente"]
+    escalade_humaine: ["objection bloquante non résolue en 2 allers-retours (arbitrage humain)", "désaccord avec safety/conformité sur un signal"]
+    interdictions: ["réécrire le rapport (il objecte, la Rédaction corrige)", "négocier les seuils"]
+
+  validation_humaine:
+    id: "agent.validation"
+    mission: "Servir les gates humains : présenter l'objet de décision avec preuves et scores, recueillir décision motivée + signature électronique, gérer SLA/rappels, verrouiller l'état. N'a aucune autonomie de décision."
+    inputs: ["artefact à valider", "contexte (scores, signaux, objections)", "rôles requis"]
+    outputs: ["art://validation/…/validation.json signée (qui, rôle, quand, quoi, pourquoi, pièces vues)", "événement de déblocage"]
+    outils: ["ui_gates", "signature_electronique", "gestion_sla_rappels"]
+    criteres_succes: ["décision + motif + signature complets", "rôle du validateur ∈ rôles requis", "journal audit mis à jour"]
+    criteres_echec: ["SLA expiré sans décision", "validateur sans rôle requis"]
+    escalade_humaine: ["C'EST l'humain — expiration SLA → rappel → blocage pipeline"]
+    interdictions: ["auto-validation", "validation par défaut à l'expiration du SLA (fail-closed)"]
+
+gates_humains:
+  G1: {objet: "qualification type d'étude (si confiance < 0.8)", role: "méthodologiste", sla_h: 48}
+  G3: {objet: "SAP / plan de test AVANT calcul inférentiel", role: "biostatisticien (+toxicologue si cosmétique)", sla_h: 72, verrou: "hash SAP gelé"}
+  G4: {objet: "signal sécurité grade ≥ 2 / MoS < 100 / conformité risquée", role: "safety assessor / toxicologue / expert réglementaire", sla_h: 48, blocage_dur: true}
+  G5: {objet: "arbitrage objections bloquantes relecture", role: "rédacteur scientifique senior", sla_h: 72}
+  G6: {objet: "rapport final avant export", role: "selon type d'étude (min. biostat + responsable étude)", sla_h: 120, blocage_dur: true}
+
+seuils_defaut:
+  dq_min_gate: 0.60
+  dq_blocage: 0.50
+  completude_endpoint_principal_min: 0.90
+  confiance_qualification_min: 0.80
+  puissance_cible: 0.80
+  cc_conclusion_possible: 0.40
+  mos_min_cosmetique: 100
+  seuil_reactions_grade2_pct: 5
+  retries_max: 3
+  allers_retours_arbitrage_max: 2

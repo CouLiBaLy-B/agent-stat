@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-stat/schemas/etat.schema.json",
+  "title": "EtatPipeline",
+  "description": "État partagé transactionnel du pipeline multi-agents (source de vérité). Versionné à chaque transition ; checkpoint par étape pour reprise propre.",
+  "type": "object",
+  "required": ["schema_version", "run_id", "study_id", "domaine", "phase_pipeline", "statut", "seed", "scores", "gates", "artefacts", "decisions", "verrous", "audit"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+
+    "run_id": { "type": "string", "pattern": "^run-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}$" },
+    "study_id": { "type": "string", "minLength": 3 },
+    "cree_le": { "type": "string", "format": "date-time" },
+    "mis_a_jour_le": { "type": "string", "format": "date-time" },
+
+    "domaine": { "enum": ["medical", "cosmetique"] },
+    "type_etude": {
+      "enum": [
+        "observationnelle_transversale", "cas_temoins", "cohorte_retrospective",
+        "cohorte_prospective", "essai_randomise", "sous_groupes",
+        "tolerance_securite_medicale", "rapport_intermediaire", "rapport_final",
+        "innocuite_cosmetique", "test_usage_controle", "tolerance_cutanee",
+        "stabilite", "compatibilite_formule_packaging", "perception_utilisateur",
+        "avant_commercialisation", "synthese_acceptabilite_risque", "indetermine"
+      ]
+    },
+    "confiance_qualification": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+
+    "phase_pipeline": {
+      "enum": [
+        "INGESTION", "QUALIFICATION_ETUDE", "VERIFICATION_COMPLETUDE",
+        "CONTROLE_QUALITE_DONNEES", "PLAN_ANALYSE", "CHOIX_METRIQUES",
+        "CALCUL_STATISTIQUE", "GESTION_MANQUANTS", "DETECTION_BIAIS_ANOMALIES",
+        "EVALUATION_SECURITE_TOLERANCE", "REDACTION_RAPPORT", "CRITIQUE_CROISEE",
+        "VALIDATION_HUMAINE", "EXPORT", "TERMINE", "BLOQUE"
+      ]
+    },
+    "statut": { "enum": ["EN_COURS", "EN_ATTENTE_HUMAIN", "BLOQUE", "TERMINE", "ABANDONNE"] },
+    "blocage": {
+      "type": ["object", "null"],
+      "required": ["motif", "regle_blocage", "debloqueur_requis", "depuis_le"],
+      "properties": {
+        "motif": { "type": "string", "minLength": 10 },
+        "regle_blocage": {
+          "enum": [
+            "DQ_SOUS_SEUIL", "COMPLETUDE_ENDPOINT_INSUFFISANTE", "GATE_HUMAIN_NON_VALIDE",
+            "SIGNAL_SECURITE_SANS_REVUE", "NON_CONFORMITE_BLOQUANTE", "CONTRADICTION_AGENTS_NON_ARBITREE",
+            "ARTEFACT_OBLIGATOIRE_ABSENT", "DEVIATION_SAP_NON_APPROUVEE",
+            "SUSPICION_MANIPULATION_DONNEES", "ERREUR_TECHNIQUE_PERSISTANTE"
+          ]
+        },
+        "debloqueur_requis": { "type": "string", "description": "Rôle humain ou artefact correctif exigé" },
+        "depuis_le": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+
+    "seed": { "type": "integer", "description": "Graine unique du run — toute opération stochastique en dérive" },
+
+    "intention_ref": { "type": ["string", "null"], "description": "art://intention/…" },
+    "sap_ref": { "type": ["string", "null"] },
+    "datasets_snapshot_ref": { "type": ["string", "null"], "description": "Snapshot DVC gelé après G2 — seule version utilisable par le calcul" },
+
+    "scores": {
+      "type": "object",
+      "required": ["fiabilite_donnees", "robustesse_analyse", "confiance_conclusion"],
+      "properties": {
+        "fiabilite_donnees": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "robustesse_analyse": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "confiance_conclusion": {
+          "type": ["number", "null"], "minimum": 0, "maximum": 1,
+          "description": "Formules versionnées au registre des décisions ; plafonds appliqués par le moteur de scores"
+        },
+        "verbalisation_cc": { "enum": ["elevee", "moderee", "faible", "insuffisante", null] }
+      },
+      "additionalProperties": false
+    },
+
+    "gates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "objet", "statut", "roles_requis"],
+        "properties": {
+          "id": { "enum": ["G0", "G1", "G2", "G3", "G4", "G5", "G6"] },
+          "objet": { "type": "string" },
+          "statut": { "enum": ["EN_ATTENTE", "VALIDATED", "REFUSED", "EXPIRED"] },
+          "artefact_ref": { "type": ["string", "null"] },
+          "roles_requis": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "decision": {
+            "type": ["object", "null"],
+            "required": ["validateur_id", "role", "date", "motif", "signature_ref"],
+            "properties": {
+              "validateur_id": { "type": "string" },
+              "role": { "type": "string" },
+              "date": { "type": "string", "format": "date-time" },
+              "motif": { "type": "string", "minLength": 10 },
+              "signature_ref": { "type": "string", "description": "Référence de signature électronique" },
+              "pieces_consultees": { "type": "array", "items": { "type": "string" } }
+            },
+            "additionalProperties": false
+          },
+          "sla_echeance": { "type": ["string", "null"], "format": "date-time" }
+        },
+        "additionalProperties": false
+      }
+    },
+
+    "artefacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ref", "type", "version", "sha256", "producteur", "statut", "cree_le"],
+        "properties": {
+          "ref": { "type": "string", "pattern": "^art://" },
+          "type": {
+            "enum": ["raw", "intention", "protocole", "sap", "dq", "biais", "assumptions",
+                     "eda", "results", "missingness", "anomalies", "safety", "compliance",
+                     "report", "critique", "validation", "export"]
+          },
+          "version": { "type": "integer", "minimum": 1 },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "producteur": { "type": "string", "description": "id agent (registry.yaml) ou 'humain:<role>'" },
+          "statut": { "enum": ["DRAFT", "PROPOSED", "VALIDATED", "SUPERSEDED", "REJECTED"] },
+          "supersedes": { "type": ["string", "null"] },
+          "prov": {
+            "type": "object",
+            "description": "Provenance W3C PROV minimal",
+            "properties": {
+              "used": { "type": "array", "items": { "type": "string" } },
+              "wasDerivedFrom": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "cree_le": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
+      }
+    },
+
+    "verrous": {
+      "type": "object",
+      "properties": {
+        "sap_sha256": {
+          "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$",
+          "description": "Posé à G3. Toute opération inférentielle vérifie l'égalité avec le hash courant du SAP ; toute différence = déviation à re-router vers G3."
+        },
+        "dataset_sha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+        "deblocable_uniquement_par": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+
+    "signaux_securite": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "nature", "grade", "preuve_ref", "statut"],
+        "properties": {
+          "id": { "type": "string" },
+          "nature": { "type": "string" },
+          "grade": { "type": "integer", "minimum": 1, "maximum": 4 },
+          "preuve_ref": { "type": "string", "pattern": "^art://" },
+          "statut": { "enum": ["NOUVEAU", "EN_REVUE_HUMAINE", "TRANCHE", "LEVE"] },
+          "decision_humaine_ref": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      }
+    },
+
+    "decisions": {
+      "type": "array",
+      "description": "Registre des décisions (arbitrages orchestrateur, déviations, choix structurants)",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "auteur", "date", "motif"],
+        "properties": {
+          "id": { "type": "string" },
+          "type": { "enum": ["ROUTAGE", "ARBITRAGE", "DEVIATION_SAP", "REPRISE", "BLOCAGE", "DEBLOCAGE", "CHOIX_METHODO"] },
+          "auteur": { "type": "string" },
+          "date": { "type": "string", "format": "date-time" },
+          "motif": { "type": "string", "minLength": 10 },
+          "artefacts_concernes": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": false
+      }
+    },
+
+    "sorties_demandes": {
+      "type": "array",
+      "items": { "enum": ["resume_executif", "sap", "plan_tests_cosmetiques", "rapport_resultats",
+                          "liste_risques", "actions_recommandees", "limites_hypotheses",
+                          "validation_humaine_requise"] }
+    },
+
+    "versions_epinglees": {
+      "type": "object",
+      "description": "Reproductibilité : tout est épinglé",
+      "properties": {
+        "catalogue_ops_stats": { "type": "string" },
+        "referentiel_regles_dq": { "type": "string" },
+        "referentiel_reglementaire": { "type": "string" },
+        "gabarits_rapports": { "type": "string" },
+        "prompts_agents": { "type": "string" },
+        "modele_llm": { "type": "string" },
+        "image_sandbox": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "audit": {
+      "type": "object",
+      "required": ["journal_ref", "dernier_hash_chaine"],
+      "properties": {
+        "journal_ref": { "type": "string", "description": "Stockage WORM append-only" },
+        "dernier_hash_chaine": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
