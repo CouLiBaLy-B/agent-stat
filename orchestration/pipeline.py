@@ -196,10 +196,16 @@ def run_pipeline(etat: Etat, sys_: dict, donnees: dict) -> Etat:
         diagnostics=1.0 if interpretables else 0.6,
         multiplicite_ok=True,
         validation_interne=0.5)                  # MVP — déclaré en limite
+    _obs = etat.type_etude in ("cas_temoins", "cohorte_prospective",
+                               "cohorte_retrospective")
+    _ajuste_ok = _obs and any(
+        a.get("role") == "ajustement"
+        and (a.get("resultat") or {}).get("interpretable")
+        for a in resultats["resultats"].values())
     cc = moteur_scores.calculer_cc(
         dq=dq_score, ra=ra, pre_enregistre=True,
-        observationnel_non_ajuste=etat.type_etude in
-        ("cas_temoins", "cohorte_prospective", "cohorte_retrospective"))
+        observationnel_non_ajuste=_obs and not _ajuste_ok,
+        observationnel_ajuste=_obs and _ajuste_ok)
     etat.scores.update({"robustesse_analyse": ra, "confiance_conclusion": cc,
                         "verbalisation_cc": moteur_scores.verbaliser_cc(cc)})
 

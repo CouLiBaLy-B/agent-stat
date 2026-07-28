@@ -261,6 +261,7 @@ def fabriquer_inferentiel(ctx: Contexte):
         groupe = spec.get("variable_groupe", "groupe")
         ctrl = ControleurExecution(etat.seed)
         resultats: dict = {}
+        ajustement_refuses: list[str] = []
 
         def _deux_groupes(ana, lignes):
             g1, g2 = ana.get("contraste", ["produit", "controle"])
@@ -416,6 +417,60 @@ def fabriquer_inferentiel(ctx: Contexte):
                 t2, e2 = _serie(g2)
                 entrees_op = {"temps1": t1, "evenements1": e1,
                               "temps2": t2, "evenements2": e2}
+            elif op in ("regression_logistique", "cox_ph"):
+                # A3 — ajustement multivarié du SAP (verrouillé G3) ; la matrice
+                # X est construite de façon DÉTERMINISTE : exposition binaire en
+                # 1re position, covariables continues en float, binaires 0/1 via
+                # modalités déclarées ; cas complets (cohérent stratégie
+                # manquants du SAP) ; k > 2 modalités ⇒ blocage (k−1 indicatrices
+                # hors MVP → décision humaine G3).
+                expo = ana["var_exposition"]
+                exp = _modalite(expo, ana.get("modalite_expose"),
+                                [1, True, "expose", "oui"])
+                nxp = _modalite(expo, ana.get("modalite_non_expose"),
+                                [0, False, "non_expose", "non"])
+                covs = list(ana.get("covariables", []))
+                requis = {expo, *covs}
+                if op == "regression_logistique":
+                    y_var = ana["var_issue"]
+                    requis.add(y_var)
+                else:
+                    tv = ana["var_temps_event"]
+                    y_var = ana["var_evenement"]
+                    requis.update({tv, y_var})
+                lignes = [r for r in rows
+                          if all(r.get(v) is not None and r.get(v) != ""
+                                 for v in requis)]
+                if op == "regression_logistique":
+                    pos = _modalite(y_var, ana.get("modalite_cas"),
+                                    [1, True, "cas", "oui", "evenement"])
+                    ent_y = [1 if r[y_var] == pos else 0 for r in lignes]
+                else:
+                    pos = ana.get("modalite_evenement", 1)
+                    ent_y = [1 if r[y_var] == pos else 0 for r in lignes]
+                ent_x = {expo: [1.0 if r.get(expo) == exp else 0.0
+                                for r in lignes]}
+                for cov in covs:
+                    vspec = spec.get("variables", {}).get(cov, {})
+                    if vspec.get("type") == "continue":
+                        ent_x[cov] = [float(r[cov]) for r in lignes]
+                    else:
+                        mods = sorted({r.get(cov) for r in lignes}, key=str)
+                        if len(mods) > 2:
+                            raise ErreurLogique(
+                                f"{ana['id']} : covariable {cov!r} à "
+                                f"{len(mods)} modalités — codage en k−1 "
+                                "indicatrices hors MVP → décision humaine G3")
+                        ent_x[cov] = [1.0 if r.get(cov) == mods[-1] else 0.0
+                                      for r in lignes]
+                entrees_op = {"epv_min": float(ana.get("epv_min", 10))}
+                if op == "regression_logistique":
+                    entrees_op.update({"y": ent_y, "x": ent_x})
+                else:
+                    entrees_op.update({
+                        "temps": [float(r[tv]) for r in lignes],
+                        "evenements": ent_y, "x": ent_x})
+                entrees_op["n_lignes_completes"] = len(lignes)
             elif op == "proportion_exacte":
                 seuil = spec.get("seuil_grade_reaction", 2)
                 var, par = ana["var"], ana.get("par", groupe)
@@ -434,13 +489,19 @@ def fabriquer_inferentiel(ctx: Contexte):
                     "entrees": {"definition": ana.get(
                         "definition", f">= {seuil} grade reaction")}}
                 continue
-            appel = {k: v for k, v in entrees_op.items() if k != "var"}
+            appel = {k: v for k, v in entrees_op.items()
+                     if k not in ("var", "n_lignes_completes")}
             res = ctrl.executer(catalogue.OPS[op]["fn"], op,
                                 catalogue.OPS[op]["version"], **appel)
             if op == "tendance_lineaire" and res.get("interpretable"):
                 res["var"] = entrees_op["var"]
             if op == "or_apparie" and res.get("interpretable"):
                 res.update(meta_apparie)
+            if ana["role"] == "ajustement" and not res.get("interpretable"):
+                ajustement_refuses.append(
+                    f"{ana['id']} : ajustement multivarié non interprétable "
+                    f"({res.get('motif')}) — revue statisticien exigée ; "
+                    "AUCUNE mesure ajustée ne sera présentée (fail-closed)")
             resultats[ana["id"]] = {
                 "op_retenue": op, "version": catalogue.OPS[op]["version"],
                 "role": ana["role"], "var": ana.get("var"),
@@ -506,8 +567,13 @@ def fabriquer_inferentiel(ctx: Contexte):
         assumptions = ["1:1 SAP↔opérations vérifié", "double exécution concordante"]
         if sensibilites:
             assumptions.append("sensibilité MI : PMM poolée Rubin + tipping point δ")
+        if any(a.get("role") == "ajustement"
+               for a in resultats.values()):
+            assumptions.append("ajustement multivarié A3 exécuté exactement "
+                               "comme verrouillé au SAP (cas complets)")
         return sortie(confidence=0.92, artefacts=[art],
                       assumptions=assumptions,
+                      contradictions=ajustement_refuses,
                       resultats=resultats, sensibilites=sensibilites,
                       results_ref=art.ref)
     return agent

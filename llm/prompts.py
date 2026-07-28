@@ -80,7 +80,7 @@ def utilisateur_biostat(type_etude: str, spec: dict, dq_resume: dict) -> str:
               "resume_dq": dq_resume}
     for cle in ("var_exposition", "var_issue", "var_evenement",
                 "var_temps_event", "var_paire", "appariement",
-                "modalite_evenement"):
+                "modalite_evenement", "ajustement_multivarie"):
         if spec.get(cle) is not None:
             corpus[cle] = spec[cle]
     return ("Propose les analyses du SAP (schema PROPOSITION_SAP).\n<donnees>\n"

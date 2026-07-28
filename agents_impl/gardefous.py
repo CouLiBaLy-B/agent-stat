@@ -208,7 +208,9 @@ def fabriquer_relecture(ctx: Contexte):
             appel = {k: v for k, v in ent.items()
                      if k in ("g1", "g2", "valeurs", "temps", "marge",
                               "a", "b", "c", "d", "paires_b", "paires_c",
-                              "temps1", "evenements1", "temps2", "evenements2")}
+                              "temps1", "evenements1", "temps2", "evenements2",
+                              # ops multivariées (A3 ajustement)
+                              "y", "x", "evenements", "epv_min")}
             if not appel:
                 objection("entrees_absentes_du_recalcul", aid,
                           "l'artefact ne permet pas le recalcul indépendant")

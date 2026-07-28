@@ -619,6 +619,310 @@ def km_logrank_hr(temps1: list[float], evenements1: list[int],
                         "HR > 1 = survenue plus rapide dans le groupe 1")}
 
 
+# ------------------------------------------------------- ajustement multivarié
+#
+# Régression logistique (IRLS) et Cox à risques proportionnels (Newton sur la
+# vraisemblance partielle de Breslow) — 100 % stdlib, déterministes, qualifiées
+# contre oracle indépendant (BFGS scipy, cf. docs/QUALIFICATION_SCIPY.md).
+# CADRE : uniquement derrière SAP verrouillé (G3) avec covariables et EPV_min
+# pré-déclarés — jamais d'ajustement post-hoc. Tous les garde-fous rendent
+# `interpretable: False` (fail-closed) : aucun OR/HR aberrant n'est émis.
+
+MAX_COVARIABLES = 14    # + intercept ≤ 15 paramètres — borne dure anti sur-ajustement
+SEP_COEF = 15.0         # |β| > 15 ⇒ OR/HR > 3e6 : quasi-séparation évidente
+CONV_ITER = 60          # budget d'itérations IRLS/Newton
+
+
+def _gauss_resoudre(a: list[list[float]], b: list[float]) -> list[float] | None:
+    """Résout a·x = b (élimination de Gauss, pivot partiel). None si un pivot
+    < 1e-12 : matrice singulière ⇒ colinéarité exacte, fail-closed."""
+    n = len(a)
+    m = [row[:] + [b[i]] for i, row in enumerate(a)]
+    for col in range(n):
+        piv = max(range(col, n), key=lambda r: abs(m[r][col]))
+        if abs(m[piv][col]) < 1e-12:
+            return None
+        m[col], m[piv] = m[piv], m[col]
+        for r in range(col + 1, n):
+            f = m[r][col] / m[col][col]
+            if f:
+                for c in range(col, n + 1):
+                    m[r][c] -= f * m[col][c]
+    x = [0.0] * n
+    for r in range(n - 1, -1, -1):
+        s = m[r][n] - sum(m[r][c] * x[c] for c in range(r + 1, n))
+        x[r] = s / m[r][r]
+    return x
+
+
+def _gauss_inverser(a: list[list[float]]) -> list[list[float]] | None:
+    """Inverse (Gauss-Jordan, pivot partiel). None si singulière."""
+    n = len(a)
+    m = [a[i][:] + [1.0 if j == i else 0.0 for j in range(n)]
+         for i in range(n)]
+    for col in range(n):
+        piv = max(range(col, n), key=lambda r: abs(m[r][col]))
+        if abs(m[piv][col]) < 1e-12:
+            return None
+        m[col], m[piv] = m[piv], m[col]
+        for r in range(n):
+            if r != col:
+                f = m[r][col] / m[col][col]
+                if f:
+                    for c in range(2 * n):
+                        m[r][c] -= f * m[col][c]
+    return [[m[r][n + c] / m[r][r] for c in range(n)] for r in range(n)]
+
+
+def _sigmoide(eta: float) -> float:
+    return 1.0 / (1.0 + math.exp(-eta)) if eta >= 0 else (
+        math.exp(eta) / (1.0 + math.exp(eta)))
+
+
+def _controles_communs(n: int, x: dict, p: int, evenements: int,
+                       epv_min: float, nom_op: str) -> dict | None:
+    """Garde-fous partagés des modèles multivariés — dict d'échec ou None."""
+    if p < 1 or p > MAX_COVARIABLES:
+        return {"interpretable": False, "test": nom_op,
+                "motif": f"{p} covariables hors borne [1 ; {MAX_COVARIABLES}]"}
+    longueurs = {len(v) for v in x.values()}
+    if n < 20 or longueurs != {n}:
+        return {"interpretable": False, "test": nom_op,
+                "motif": "n < 20 ou covariables désalignées"}
+    if evenements < 1:
+        return {"interpretable": False, "test": nom_op,
+                "motif": "aucun événement observé (issue constante)"}
+    epv = evenements / p
+    if epv < epv_min:
+        return {"interpretable": False, "test": nom_op,
+                "motif": (f"EPV insuffisant : {epv:.1f} < {epv_min:g} "
+                          f"(événements/covariable — sur-ajustement certain)"),
+                "epv": round(epv, 3)}
+    for nom, col in x.items():
+        if min(col) == max(col):   # exact et sans unité : colonne constante
+            return {"interpretable": False, "test": nom_op,
+                    "motif": f"covariable {nom!r} constante (variance nulle)"}
+    return None
+
+
+def _coefs_sortie(beta: list[float], cov: list[list[float]], noms: list[str],
+                  alpha: float, mesure: str) -> list[dict]:
+    z = dist.norm_ppf(1 - alpha / 2)
+    out = []
+    for j, nom in enumerate(noms):
+        b = beta[j]
+        se = math.sqrt(cov[j][j])
+        zw = b / se if se > 0 else 0.0
+        out.append({"covariable": nom, "beta": b, "se": se, "z": zw,
+                    "p_valeur": min(1.0, 2 * dist.norm_sf(abs(zw))),
+                    mesure: math.exp(b),
+                    f"ic95_{'or' if mesure == 'odds_ratio' else 'hr'}":
+                        [math.exp(b - z * se), math.exp(b + z * se)]})
+    return out
+
+
+def regression_logistique(y: list[int], x: dict[str, list[float]],
+                          epv_min: float = 10.0, max_iter: int = CONV_ITER,
+                          tol: float = 1e-9, alpha: float = 0.05,
+                          seed: int = 0) -> dict:
+    """Régression logistique binaire par IRLS (ré-estimation itérative des
+    moindres carrés pondérés = Newton-Raphson).
+
+    CADRE D'EMPLOI : ajustement multivarié PRÉ-DÉCLARÉ au SAP (G3) pour les
+    designs observationnels — l'OR « ajusté » reste une ASSOCIATION (confusion
+    non mesurée possible), le lexique causal demeure interdit.
+    Garde-fous fail-closed : EPV (événements par variable) < seuil, covariable
+    constante, colinéarité exacte, quasi-séparation ou non-convergence ⇒
+    `interpretable: False` (revue statisticien — aucun OR aberrant émis).
+    """
+    noms = list(x)
+    p, n = len(noms), len(y)
+    ens = set(y)
+    if ens - {0, 1}:
+        return {"interpretable": False, "test": "regression_logistique",
+                "motif": "issue non binaire (0/1 exigé)"}
+    ev = min(sum(y), n - sum(y))
+    refuse = _controles_communs(n, x, p, ev, epv_min, "regression_logistique")
+    if refuse:
+        return refuse
+
+    X = [[1.0] + [float(x[nom][i]) for nom in noms] for i in range(n)]
+    p0 = min(max(sum(y) / n, 1e-6), 1 - 1e-6)
+    beta = [math.log(p0 / (1 - p0))] + [0.0] * p
+
+    converge, it = False, 0
+    for it in range(1, max_iter + 1):
+        eta = [sum(beta[j] * X[i][j] for j in range(p + 1)) for i in range(n)]
+        mu = [_sigmoide(e) for e in eta]
+        w = [max(m_ * (1 - m_), 1e-9) for m_ in mu]
+        z = [eta[i] + (y[i] - mu[i]) / w[i] for i in range(n)]
+        A = [[sum(w[i] * X[i][j] * X[i][k] for i in range(n))
+              for k in range(p + 1)] for j in range(p + 1)]
+        b = [sum(w[i] * X[i][j] * z[i] for i in range(n))
+             for j in range(p + 1)]
+        nouveau = _gauss_resoudre(A, b)
+        if nouveau is None:
+            return {"interpretable": False, "test": "regression_logistique",
+                    "motif": "colinéarité exacte entre covariables (matrice "
+                             "d'information singulière)"}
+        beta, delta = nouveau, max(abs(nouveau[j] - beta[j])
+                                   for j in range(p + 1))
+        if max(abs(bj) for bj in beta) > SEP_COEF:
+            return {"interpretable": False, "test": "regression_logistique",
+                    "motif": ("quasi-séparation (|β| > "
+                              f"{SEP_COEF:g}) : modèle non identifiable — "
+                              "revue statisticien exigée")}
+        if delta < tol:
+            converge = True
+            break
+    if not converge:
+        return {"interpretable": False, "test": "regression_logistique",
+                "motif": f"non-convergence après {max_iter} itérations IRLS"}
+
+    eta = [sum(beta[j] * X[i][j] for j in range(p + 1)) for i in range(n)]
+    mu = [_sigmoide(e) for e in eta]
+    ll = sum(y[i] * math.log(max(mu[i], 1e-300))
+             + (1 - y[i]) * math.log(max(1 - mu[i], 1e-300)) for i in range(n))
+    ll0 = n * (p0 * math.log(p0) + (1 - p0) * math.log(1 - p0))
+    A = [[sum(mu[i] * (1 - mu[i]) * X[i][j] * X[i][k] for i in range(n))
+          for k in range(p + 1)] for j in range(p + 1)]
+    cov = _gauss_inverser(A)
+    if cov is None:
+        return {"interpretable": False, "test": "regression_logistique",
+                "motif": "matrice de covariance singulière à l'optimum"}
+    chi2 = 2 * (ll - ll0)
+    z_int = dist.norm_ppf(1 - alpha / 2)
+    se_int = math.sqrt(cov[0][0])
+    return {
+        "interpretable": True, "test": "regression_logistique",
+        "n": n, "n_evenements_minoritaire": ev, "epv": round(ev / p, 3),
+        "n_covariables": p,
+        "coefficients": _coefs_sortie(beta[1:], [r[1:] for r in cov[1:]],
+                                      noms, alpha, "odds_ratio"),
+        "intercept": {"beta": beta[0], "se": se_int,
+                      "p_valeur": min(1.0, 2 * dist.norm_sf(
+                          abs(beta[0] / se_int) if se_int > 0 else 0.0))},
+        "log_vraisemblance": ll, "ll_modele_nul": ll0,
+        "chi2_modele": chi2, "ddl_modele": p,
+        "p_valeur_modele": dist.chi2_sf(chi2, p),
+        "pseudo_r2_mcfadden": 1 - ll / ll0 if ll0 else 0.0,
+        "aic": -2 * ll + 2 * (p + 1),
+        "iterations": it, "seuil_epv": epv_min,
+        "hypothese": ("linéarité du logit pour les covariables continues — "
+                      "non testée ici (diagnostics hors MVP, décision G3)"),
+        "lecture": ("association AJUSTÉE sur les covariables du SAP — reste "
+                    "non causale (confusion non mesurée possible) ; "
+                    "OR = odds ratio conditionnel aux autres covariables"),
+        "note_lexique": "tournures d'association uniquement (⇒ relecture)"}
+
+
+def cox_ph(temps: list[float], evenements: list[int],
+           x: dict[str, list[float]], epv_min: float = 10.0,
+           max_iter: int = CONV_ITER, tol: float = 1e-9,
+           alpha: float = 0.05, seed: int = 0) -> dict:
+    """Cox à hasards proportionnels — vraisemblance partielle de Breslow
+    (ex æquo), itérations de Newton avec gradient et information exacts.
+
+    CADRE D'EMPLOI : ajustement multivarié PRÉ-DÉCLARÉ au SAP (G3). L'hypothèse
+    de risques PROPORTIONNELS n'est PAS testée ici (résidus de Schoenfeld hors
+    MVP) : elle est déclarée à l'humain au G3 et reprise en section limites.
+    Mêmes garde-fous fail-closed que la logistique (EPV, colinéarité,
+    quasi-séparation, non-convergence).
+    """
+    noms = list(x)
+    p, n = len(noms), len(temps)
+    refuse = _controles_communs(n, x, p, sum(evenements), epv_min, "cox_ph")
+    if refuse:
+        return refuse
+    if set(evenements) - {0, 1}:
+        return {"interpretable": False, "test": "cox_ph",
+                "motif": "indicatrice d'événement non binaire (0/1 exigée)"}
+    if any(t <= 0 for t in temps):
+        return {"interpretable": False, "test": "cox_ph",
+                "motif": "temps strictement positifs exigés"}
+    ev = sum(evenements)
+
+    # centrage des covariables : invariant exact du modèle (la constante se
+    # simplifie dans chaque contraste de la vraisemblance partielle) et stabilise
+    # exp(η) — documenté pour la qualification bit-à-bit vs oracle.
+    moy = {nom: _moy(x[nom]) for nom in noms}
+    X = [[float(x[nom][i]) - moy[nom] for nom in noms] for i in range(n)]
+    t_evt = sorted({temps[i] for i in range(n) if evenements[i] == 1})
+
+    def _score_info(beta):
+        eta = [min(50.0, max(-50.0, sum(beta[j] * X[i][j] for j in range(p))))
+               for i in range(n)]
+        w = [math.exp(e) for e in eta]
+        ll = u = None
+        U = [0.0] * p
+        I = [[0.0] * p for _ in range(p)]
+        ll = 0.0
+        for t in t_evt:
+            ris = [i for i in range(n) if temps[i] >= t]
+            d = sum(evenements[i] for i in ris if temps[i] == t)
+            s0 = sum(w[i] for i in ris)
+            s1 = [sum(w[i] * X[i][j] for i in ris) for j in range(p)]
+            s2 = [[sum(w[i] * X[i][j] * X[i][k] for i in ris)
+                   for k in range(p)] for j in range(p)]
+            for i in range(n):
+                if temps[i] == t and evenements[i] == 1:
+                    ll += eta[i] - math.log(s0)
+                    for j in range(p):
+                        U[j] += X[i][j] - s1[j] / s0
+            for j in range(p):
+                for k in range(p):
+                    I[j][k] += d * (s2[j][k] / s0
+                                    - s1[j] * s1[k] / (s0 * s0))
+        return ll, U, I
+
+    beta = [0.0] * p
+    ll0, u0, i0 = _score_info(beta)
+    converge, it = False, 0
+    for it in range(1, max_iter + 1):
+        _, U, I = _score_info(beta)
+        delta = _gauss_resoudre(I, U)
+        if delta is None:
+            return {"interpretable": False, "test": "cox_ph",
+                    "motif": "colinéarité exacte entre covariables (information "
+                             "singulière)"}
+        beta = [beta[j] + delta[j] for j in range(p)]
+        if max(abs(bj) for bj in beta) > SEP_COEF:
+            return {"interpretable": False, "test": "cox_ph",
+                    "motif": ("quasi-séparation (|β| > "
+                              f"{SEP_COEF:g}) : modèle non identifiable — "
+                              "revue statisticien exigée")}
+        if max(abs(dj) for dj in delta) < tol:
+            converge = True
+            break
+    if not converge:
+        return {"interpretable": False, "test": "cox_ph",
+                "motif": f"non-convergence après {max_iter} itérations Newton"}
+
+    ll, _, I = _score_info(beta)
+    cov = _gauss_inverser(I)
+    if cov is None:
+        return {"interpretable": False, "test": "cox_ph",
+                "motif": "matrice de covariance singulière à l'optimum"}
+    i0i = _gauss_inverser(i0)
+    score = (sum(u0[j] * i0i[j][k] * u0[k] for j in range(p) for k in range(p))
+             if i0i is not None else None)
+    return {
+        "interpretable": True, "test": "cox_ph", "n": n,
+        "n_evenements": ev, "epv": round(ev / p, 3), "n_covariables": p,
+        "coefficients": _coefs_sortie(beta, cov, noms, alpha, "hazard_ratio"),
+        "log_vraisemblance_partielle": ll, "ll_partielle_nulle": ll0,
+        "chi2_score_modele": score, "ddl_modele": p,
+        "p_valeur_modele": (dist.chi2_sf(score, p)
+                            if score is not None else None),
+        "iterations": it, "seuil_epv": epv_min, "methode_ties": "Breslow",
+        "hypothese": ("risques relatifs PROPORTIONNELS supposés — NON testée "
+                      "ici (Schoenfeld hors MVP) : confirmée à G3, reprise en "
+                      "limites du rapport"),
+        "lecture": ("association AJUSTÉE (HR conditionnel aux covariables du "
+                    "SAP) — reste non causale ; HR > 1 = survenue plus rapide"),
+        "note_lexique": "tournures d'association uniquement (⇒ relecture)"}
+
+
 # ------------------------------------------------------------------ registre
 
 OPS: dict[str, dict] = {
@@ -641,6 +945,8 @@ OPS: dict[str, dict] = {
     "or_apparie":            {"fn": or_apparie,            "version": "1.0.0"},
     "risque_relatif_cohorte": {"fn": risque_relatif_cohorte, "version": "1.0.0"},
     "km_logrank_hr":         {"fn": km_logrank_hr,         "version": "1.0.0"},
+    "regression_logistique": {"fn": regression_logistique, "version": "1.0.0"},
+    "cox_ph":                {"fn": cox_ph,                "version": "1.0.0"},
 }
 
 

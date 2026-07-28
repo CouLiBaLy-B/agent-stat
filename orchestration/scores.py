@@ -7,7 +7,14 @@ décision au registre + revalidation des études en cours.
 """
 from __future__ import annotations
 
-FORMULE_VERSION = "scores-1.0.0"
+FORMULE_VERSION = "scores-1.1.0"
+# Historique des constantes : 1.1.0 (2026-07-28) — nouveau plafond
+# `observationnel_ajuste` (CC ≤ 0,75) pour association multivariée
+# PRÉ-DÉCLARÉE au SAP verrouillé (G3) : l'ajustement lève partiellement
+# le plafond univarié 0,60 mais ne hisse JAMAIS une association ajustée
+# au niveau d'un essai randomisé (confusion non mesurée ; ≥ 0,8 = « élevée »
+# reste réservé à l'expérimental). Décision de registre : chantier
+# « ajustement multivarié cadré » (cf. docs/AJUSTEMENT_MULTIVARIE.md).
 
 
 def calculer_ra(hypotheses_ok: float, concordance_sensibilite: float,
@@ -26,7 +33,8 @@ def calculer_cc(dq: float, ra: float, pre_enregistre: bool,
                 analyse_post_hoc: bool = False,
                 endpoint_pre_specifie: bool = True,
                 convergence_signaux: float = 1.0,
-                observationnel_non_ajuste: bool = False) -> float:
+                observationnel_non_ajuste: bool = False,
+                observationnel_ajuste: bool = False) -> float:
     facteur = (1.0 if pre_enregistre else 0.8) * convergence_signaux
     cc = min(dq, ra) * facteur
     if dq < 0.60:
@@ -35,6 +43,9 @@ def calculer_cc(dq: float, ra: float, pre_enregistre: bool,
         cc = min(cc, 0.50)
     if observationnel_non_ajuste:
         cc = min(cc, 0.60)   # association univariée : jamais confiance elevee
+    if observationnel_ajuste:
+        cc = min(cc, 0.75)   # association AJUSTÉE au SAP : plafond levé mais
+        # jamais à hauteur d'essai randomisé (confusion non mesurée)
     if not endpoint_pre_specifie:
         cc = min(cc, 0.60)
     return round(cc, 4)

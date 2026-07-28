@@ -52,10 +52,64 @@ def _gabarit_observationnel(spec: dict, dq: dict) -> list[dict]:
     return _gabarit_usage_cosmetique(spec, dq)  # MVP : même trame, lexique contrôlé en aval
 
 
+def _bloc_ajustement(spec: dict, mode: str) -> dict | None:
+    """Analyse A3 « ajustement multivarié » si pré-déclarée dans la spec
+    (`spec["ajustement_multivarie"] = {"covariables": [...], "epv_min": 10}`).
+
+    Cadrage fail-closed :
+    - l'exposition est TOUJOURS la 1re covariable du modèle (imposée) ;
+    - cas-témoins APPARIÉE + ajustement ⇒ logistique conditionnelle hors
+      catalogue : blocage (décision humaine G3), jamais d'approximation ;
+    - EPV minimum >= 5 (défaut 10) — règle anti sur-ajustement ;
+    - le modèle reste une ASSOCIATION ajustée (lexique contrôlé aval).
+    """
+    aj = spec.get("ajustement_multivarie")
+    if not aj:
+        return None
+    conf = list(aj.get("covariables", []))
+    epv_min = float(aj.get("epv_min", 10))
+    expo = spec.get("var_exposition")
+    if not expo:
+        raise ErreurLogique("ajustement multivarié : 'var_exposition' requis "
+                            "dans la spec")
+    if not conf:
+        raise ErreurLogique("ajustement multivarié : 'covariables' non vide "
+                            "exigé (sinon = univarié déjà planifié)")
+    if epv_min < 5:
+        raise ErreurLogique("ajustement multivarié : 'epv_min' >= 5 exigé "
+                            "(règle anti sur-ajustement)")
+    base = {"id": "A3", "role": "ajustement", "var": expo,
+            "var_exposition": expo, "covariables": conf, "epv_min": epv_min}
+    if mode == "cas_temoins":
+        if spec.get("appariement"):
+            raise ErreurLogique(
+                "cas-témoins appariée + ajustement ⇒ régression logistique "
+                "CONDITIONNELLE hors catalogue — blocage : décision humaine G3")
+        issue = spec.get("var_issue")
+        if not issue:
+            raise ErreurLogique("ajustement cas-témoins : 'var_issue' requis")
+        return {**base, "op": "regression_logistique", "var_issue": issue,
+                "note": ("OR ajusté (SAP verrouillé) — association ajustée ; "
+                         "confusion non mesurée possible")}
+    ev = spec.get("var_evenement")
+    if not ev:
+        raise ErreurLogique("ajustement cohorte : 'var_evenement' requis")
+    tv = spec.get("var_temps_event")
+    if tv:
+        return {**base, "op": "cox_ph", "var_evenement": ev,
+                "var_temps_event": tv,
+                "note": ("HR ajusté (Cox/Breslow, SAP verrouillé) — risques "
+                         "proportionnels SUPPOSÉS à confirmer G3 ; association "
+                         "ajustée, non causale")}
+    return {**base, "op": "regression_logistique", "var_issue": ev,
+            "note": ("OR ajusté sur incidence (SAP verrouillé) — association "
+                     "ajustée ; confusion non mesurée possible")}
+
+
 def _gabarit_cas_temoins(spec: dict, dq: dict) -> list[dict]:
     """Cas-témoins : primaire = OR (apparié conditionnel si appariement 1:1).
-    Aucun ajustement multivarié au MVP — le lexique d'association est imposé
-    par le SAP (garde_fous_observationnel) et contrôlé à la relecture."""
+    Ajustement multivarié uniquement si pré-déclaré (`ajustement_multivarie`)
+    — A3 verrouillée au SAP, jamais post-hoc."""
     expo, issue = spec.get("var_exposition"), spec.get("var_issue")
     if not expo or not issue:
         raise ErreurLogique("cas-témoins : 'var_exposition' et 'var_issue' "
@@ -78,6 +132,9 @@ def _gabarit_cas_temoins(spec: dict, dq: dict) -> list[dict]:
                          "op": "odds_ratio_cas_temoins", "var": expo,
                          "var_exposition": expo, "var_issue": issue,
                          "note": "OR de Woolf + p exacte de Fisher"})
+    a3 = _bloc_ajustement(spec, "cas_temoins")
+    if a3:
+        analyses.append(a3)
     return analyses
 
 
@@ -110,6 +167,9 @@ def _gabarit_cohorte(spec: dict, dq: dict) -> list[dict]:
                          "op": "risque_relatif_cohorte", "var": ev,
                          "par": groupe, "contraste": contraste,
                          "var_evenement": ev})
+    a3 = _bloc_ajustement(spec, "cohorte")
+    if a3:
+        analyses.append(a3)
     return analyses
 
 
@@ -146,13 +206,32 @@ CLES_METIER_ASSOCIATION = {
     "or_apparie": ["var_exposition", "var_issue", "var_paire"],
     "risque_relatif_cohorte": ["var_evenement"],
     "km_logrank_hr": ["var_evenement", "var_temps_event"],
+    # ajustement multivarié (A3) — variables du modèle contrôlées plus bas
+    "regression_logistique": ["var_exposition", "var_issue", "covariables"],
+    "cox_ph": ["var_exposition", "var_evenement", "var_temps_event",
+               "covariables"],
 }
+OPS_AJUSTEMENT = {"regression_logistique", "cox_ph"}
 
 
 def _verifier_regles_metier(analyses: list[dict], spec: dict) -> None:
     """Contre-vérification déterministe de toute proposition LLM."""
     if sum(1 for a in analyses if a.get("role") == "primaire") != 1:
         raise ErreurLogique("exactement UNE analyse primaire exigée")
+    aj_spec = spec.get("ajustement_multivarie")
+    if aj_spec:
+        a3 = next((a for a in analyses if a.get("role") == "ajustement"), None)
+        if a3 is None:
+            raise ErreurLogique(
+                "ajustement multivarié pré-déclaré dans la spec : la "
+                "proposition NE DOIT PAS l'omettre (repli gabarit)")
+        if (set(a3.get("covariables") or [])
+                != set(aj_spec.get("covariables", []))
+                or float(a3.get("epv_min", 10))
+                != float(aj_spec.get("epv_min", 10))):
+            raise ErreurLogique(
+                "l'ajustement proposé dévie de la déclaration de la spec "
+                "(covariables/epv_min) — repli gabarit, jamais de dérive")
     variables = set(spec.get("variables", {}))
     for a in analyses:
         if a["op"] not in OPS:
@@ -165,11 +244,27 @@ def _verifier_regles_metier(analyses: list[dict], spec: dict) -> None:
         if a.get("fallback") and a["fallback"]["op"] not in OPS:
             raise ErreurLogique(f"{a['id']} : fallback hors catalogue")
         for cle in CLES_METIER_ASSOCIATION.get(a["op"], []):
+            if cle == "covariables":
+                continue                       # contrôlées ci-dessous
             if not a.get(cle):
                 raise ErreurLogique(f"{a['id']} : {a['op']} exige {cle!r}")
             if a[cle] not in variables:
                 raise ErreurLogique(f"{a['id']} : {cle}={a[cle]!r} absente "
                                     "de la spec")
+        if a["op"] in OPS_AJUSTEMENT:
+            covs = a.get("covariables") or []
+            if not covs:
+                raise ErreurLogique(f"{a['id']} : ajustement sans covariables")
+            for cov in covs:
+                if cov not in variables:
+                    raise ErreurLogique(
+                        f"{a['id']} : covariable {cov!r} absente de la spec")
+            if float(a.get("epv_min", 10)) < 5:
+                raise ErreurLogique(f"{a['id']} : epv_min >= 5 exigé "
+                                    "(anti sur-ajustement)")
+            if a.get("var_exposition") in covs:
+                raise ErreurLogique(f"{a['id']} : l'exposition est imposée en "
+                                    "1re position — ne pas la redoubler")
 
 
 def _defauts(analyses: list[dict], spec: dict) -> list[dict]:
@@ -250,13 +345,23 @@ def fabriquer(ctx: Contexte, llm=None):
         }
         if etat.type_etude in ("cas_temoins", "cohorte_prospective",
                                "cohorte_retrospective"):
+            a3 = next((a for a in analyses if a.get("role") == "ajustement"),
+                      None)
             sap["garde_fous_observationnel"] = {
                 "lexique": ("association ≠ causalité — vocabulaire causal "
                             "interdit au rapport (contrôlé par la relecture)"),
-                "ajustement": ("analyse non ajustée (univariée) en MVP : toute "
-                               "ampleur rapportée reste exploratoire ; "
-                               "l'ajustement multivarié est une décision "
-                               "humaine (G3)"),
+                "ajustement": (
+                    f"ajustement multivarié PRÉ-DÉCLARÉ (A3 : {a3['op']}, "
+                    f"covariables {a3['covariables']}, EPV_min "
+                    f"{a3['epv_min']:g}) — verrouillé à G3 ; association "
+                    "AJUSTÉE rapportée : confusion non mesurée possible ; "
+                    "aucun ajustement post-hoc ; si A3 non interprétable "
+                    "(EPV/séparation/colinéarité) : revue statisticien, "
+                    "aucune mesure ajustée présentée"
+                    if a3 else
+                    "analyse non ajustée (univariée) : toute ampleur "
+                    "rapportée reste exploratoire ; l'ajustement multivarié "
+                    "est une décision humaine (G3)"),
                 "biais": ("confusion non mesurée, biais de sélection et "
                           "d'information à documenter en section limites"),
                 "reference": "STROBE — reporting des études observationnelles",

@@ -89,6 +89,37 @@ def _faits_op_association(op: str, r: dict) -> str:
     return ""
 
 
+def _faits_ajustement(op: str, r: dict, entipes: dict) -> str:
+    """Ligne de FAITS pour l'analyse d'ajustement multivariée A3 — mesure
+    ajustée + IC95 % pour CHAQUE coefficient, jamais la p seule ; le rappel
+    « association ajustée ≠ causalité » reste dans le même fait."""
+    coefs = r.get("coefficients", [])
+    if not coefs:
+        return ""
+    mesure = "OR" if op == "regression_logistique" else "HR"
+    cle_m = "odds_ratio" if op == "regression_logistique" else "hazard_ratio"
+    cle_ic = "ic95_or" if op == "regression_logistique" else "ic95_hr"
+    morceaux = []
+    for c in coefs:
+        ic = c.get(cle_ic) or [None, None]
+        morceaux.append(
+            f"`{c['covariable']}` {mesure} ajusté = {_fmt(c[cle_m])} "
+            f"(IC95 % [{_fmt(ic[0])} ; {_fmt(ic[1])}]), "
+            f"p de Wald {_fmt_p(c['p_valeur'])}")
+    modele = ("régression logistique binaire (IRLS)"
+              if op == "regression_logistique" else
+              "modèle de Cox à risques proportionnels (Breslow)")
+    extra = (f"pseudo-R² de McFadden {_fmt(r.get('pseudo_r2_mcfadden'))}, "
+             if op == "regression_logistique" else "")
+    return (f"Association AJUSTÉE ({modele}, SAP verrouillé G3, cas complets "
+            f"n={r.get('n')}, EPV={r.get('epv')} ≥ {r.get('seuil_epv'):g}) : "
+            + " ; ".join(morceaux)
+            + f" ; modèle global : χ²({_fmt(r.get('ddl_modele'), 0)} ddl) p "
+            + _fmt_p(r.get("p_valeur_modele")) + f" ; {extra}"
+            + "mesures AJUSTÉES aux covariables pré-déclarées — restent "
+            "associatives (confusion non mesurée)")
+
+
 def fabriquer_redaction(ctx: Contexte):
     ctx.producteur = "agent.redaction"
 
@@ -149,6 +180,20 @@ def fabriquer_redaction(ctx: Contexte):
                 f"{_fmt((a1.get('ic95_difference') or [None, None])[1])}]), "
                 f"test {a1.get('test')}, p {_fmt_p(a1.get('p_valeur'))}, "
                 f"taille d'effet d={_fmt(a1.get('taille_effet_cohen_d'))} {_src(src_res)}")
+        # ajustement multivarié A3 (observationnel, SAP verrouillé)
+        a3_res = next((a for a in res.values()
+                       if a.get("role") == "ajustement"), None)
+        if a3_res is not None:
+            r3 = a3_res.get("resultat", {})
+            if r3.get("interpretable"):
+                faits.append(f"- {_faits_ajustement(a3_res['op_retenue'], r3, a3_res.get('entrees', {}))} "
+                             f"{_src(src_res)}")
+            else:
+                faits.append(
+                    f"- Ajustement multivarié `{a3_res.get('op_retenue')}` "
+                    f"(A3, SAP verrouillé) : NON interprétable — "
+                    f"{r3.get('motif')} ; aucune mesure ajustée présentée "
+                    f"(fail-closed) {_src(src_res)}")
         sens = e["resultats"].get("sensibilites", {}).get("A1_sensibilite_MI")
         if sens and sens.get("pooled", {}).get("interpretable"):
             p = sens["pooled"]
@@ -189,16 +234,39 @@ def fabriquer_redaction(ctx: Contexte):
         conclusion_directionnelle = None
         if op1 in OPS_ASSOCIATION and a1.get("interpretable"):
             if cc >= 0.4:
-                sig = (a1.get("p_valeur") or 1.0) < 0.05
-                grandeur = GRANDEUR_ASSOCIATION[op1]
-                marqueur = "est" if sig else "n'est PAS"
-                inferences.append(
-                    f"- Au seuil 5 %, l'exposition {marqueur} statistiquement "
-                    f"associée à l'issue ({grandeur} et son IC95 % en section "
-                    "FAITS) ; la lecture est strictement relationnelle et "
-                    "l'ampleur plausible est bornée par l'intervalle.")
-                conclusion_directionnelle = ("association_significative" if sig
-                                             else "association_non_significative")
+                a3_ok = (a3_res is not None
+                         and (a3_res.get("resultat") or {}).get("interpretable"))
+                if a3_ok:
+                    # mesure d'intérêt PRE-DÉCLARÉE = association ajustée (A3) ;
+                    # la mesure brute (A1) reste rapportée en FAITS.
+                    ce = a3_res["resultat"]["coefficients"][0]   # exposition imposée
+                    sig = (ce.get("p_valeur") or 1.0) < 0.05
+                    mesure = ("OR" if a3_res["op_retenue"]
+                              == "regression_logistique" else "HR")
+                    marqueur = "est" if sig else "n'est PAS"
+                    inferences.append(
+                        f"- Au seuil 5 %, l'exposition {marqueur} "
+                        "statistiquement associée à l'issue APRES AJUSTEMENT "
+                        f"sur les covariables pré-déclarées ({mesure} ajusté "
+                        "et son IC95 % en section FAITS) — mesure d'intérêt "
+                        "verrouillée au SAP ; la mesure brute (univariée) "
+                        "reste rapportée à titre descriptif.")
+                    conclusion_directionnelle = (
+                        "association_ajustee_significative" if sig else
+                        "association_ajustee_non_significative")
+                else:
+                    sig = (a1.get("p_valeur") or 1.0) < 0.05
+                    grandeur = GRANDEUR_ASSOCIATION[op1]
+                    marqueur = "est" if sig else "n'est PAS"
+                    inferences.append(
+                        f"- Au seuil 5 %, l'exposition {marqueur} "
+                        f"statistiquement associée à l'issue ({grandeur} et "
+                        "son IC95 % en section FAITS) ; la lecture est "
+                        "strictement relationnelle et l'ampleur plausible est "
+                        "bornée par l'intervalle.")
+                    conclusion_directionnelle = (
+                        "association_significative" if sig
+                        else "association_non_significative")
                 if not sig:
                     inferences.append(
                         "- Absence de significativité ≠ absence d'association : "
@@ -212,11 +280,31 @@ def fabriquer_redaction(ctx: Contexte):
                 "- Association ≠ causalité : ce design observationnel "
                 "n'autorise aucune lecture causale (confusion non mesurée, "
                 "biais de sélection et d'information non exclus).")
-            inferences.append(
-                "- Analyse non ajustée (univariée) : l'ampleur rapportée reste "
-                "exploratoire ; tout ajustement multivarié (régression "
-                "logistique, Cox…) relève d'une décision biostatistique "
-                "pré-spécifiée au SAP (G3), jamais pilotée par les résultats.")
+            if a3_res is not None and (a3_res.get("resultat") or {}).get(
+                    "interpretable"):
+                a3_sap = next((a for a in sap.get("analyses", [])
+                               if a.get("role") == "ajustement"), {})
+                cov_aj = list(a3_sap.get("covariables") or [])
+                inferences.append(
+                    "- L'association est rapportée AJUSTÉE sur les covariables "
+                    f"pré-déclarées au SAP ({', '.join(cov_aj) or 'n/d'}) — "
+                    "voir FAITS ; cette mesure multivariée reste une "
+                    "association : la confusion non mesurée et les hypothèses "
+                    "du modèle (forme fonctionnelle, risques proportionnels "
+                    "le cas échéant) restent à la charge du statisticien (G3).")
+            elif a3_res is not None:
+                inferences.append(
+                    "- L'ajustement multivarié pré-déclaré (A3) n'était PAS "
+                    "interprétable (voir FAITS) : la seule mesure disponible "
+                    "est l'association univariée, exploratoire par nature — "
+                    "revue biostatistique exigée avant toute poursuite.")
+            else:
+                inferences.append(
+                    "- Analyse non ajustée (univariée) : l'ampleur rapportée "
+                    "reste exploratoire ; tout ajustement multivarié "
+                    "(régression logistique, Cox…) relève d'une décision "
+                    "biostatistique pré-spécifiée au SAP (G3), jamais pilotée "
+                    "par les résultats.")
         if a1.get("test") == "tost_equivalence" and a1.get("interpretable"):
             ok_eq = a1.get("verdict") == "equivalence_demontree"
             inferences.append(
@@ -283,6 +371,13 @@ def fabriquer_redaction(ctx: Contexte):
             + [f"[analyse] {a}" for a in e.get("analyse_assumptions", [])] \
             + [f"[observationnel:{k}] {v}" for k, v in
                (e["sap"].get("garde_fous_observationnel") or {}).items()] \
+            + ([f"[ajustement] hypothèses du modèle {a3_res['op_retenue']} NON "
+                "testées (linéarité du logit / risques proportionnels — "
+                "diagnostics hors MVP, déclarées et assumées à G3) ; analyse "
+                "en cas complets (voir stratégie manquants du SAP)"]
+               if a3_res is not None
+               and (a3_res.get("resultat") or {}).get("interpretable")
+               else []) \
             + ["Verbalisation CC = "
                f"{scores.get('verbalisation_cc', 'n/a')} ; toute conclusion est "
                "bornée par ce score.",

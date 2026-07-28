@@ -41,7 +41,9 @@ Valeurs de référence gelées en tests (`tests/test_observationnel.py`) : table
 V = 1,1984, χ²₁ = 0,7042, HR = 0,4646) — toutes recalculées à la main.
 
 ### Limites d'estimation assumées (MVP)
-- **Aucun ajustement multivarié** (régression logistique, Cox) : le SAP porte
+- **Ajustement multivarié UNIQUEMENT pré-déclaré** (logistique, Cox) :
+  cf. docs/AJUSTEMENT_MULTIVARIE.md — verrouillé à G3, CC ≤ 0,75 ; sinon le
+  SAP porte
   un bloc `garde_fous_observationnel` qui l'explicite, la rédaction le répète
   en inférences et limites, et toute ampleur est marquée « exploratoire ».
 - HR Peto = approximation documentée (log-rank summary), pas un Cox.

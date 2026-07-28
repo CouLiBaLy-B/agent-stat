@@ -8,6 +8,7 @@ référence avec le script (cf. docs/QUALIFICATION_SCIPY.md).
 """
 from __future__ import annotations
 
+import math
 import random
 
 SEED = 20260728
@@ -25,6 +26,47 @@ def _gauss_jeu(seed: int, n: int, mu: float, sigma: float,
 def _gamma_jeu(seed: int, n: int, alpha: float, beta: float) -> list[float]:
     rng = random.Random(seed)
     return [rng.gammavariate(alpha, beta) for _ in range(n)]
+
+
+def _jeu_logistique(seed: int, n: int) -> dict:
+    """Cohorte synthétique à confusion d'âge : proba(traité) monte avec l'âge,
+    risque d'événement monte avec l'âge et diminue sous traitement.
+    vrais β : intercept −3,5 ; age +0,05 ; traite −0,9 (IC à couvrir)."""
+    rng = random.Random(seed)
+    age = [rng.gauss(58.0, 12.0) for _ in range(n)]
+    traite = [1.0 if rng.random() < _sigmoide((a - 55.0) / 6.0) else 0.0
+              for a in age]
+    y = [1 if rng.random() < _sigmoide(-3.5 + 0.05 * age[i] - 0.9 * traite[i])
+         else 0 for i in range(n)]
+    return {"y": y, "x": {"traite": traite, "age": age}}
+
+
+def _jeu_cox(seed: int, n: int, p_censure: float, b_age: float,
+             b_exp: float, arrondi: bool) -> dict:
+    """Survie synthétique : risque instantané multiplié par exp(b_age·age_c
+    + b_exp·expo) ; temps arrondis à l'entier ⇒ ex æquo (vérification
+    de la construction de Breslow)."""
+    rng = random.Random(seed)
+    age = [rng.gauss(0.0, 1.0) for _ in range(n)]
+    expo = [1.0 if rng.random() < _sigmoide(0.8 * age[i]) else 0.0
+            for i in range(n)]
+    temps, evt = [], []
+    for i in range(n):
+        t = rng.expovariate(0.12 * math.exp(b_age * age[i] + b_exp * expo[i]))
+        if arrondi:
+            t = round(t) + 0.5          # ex æquo nettement massifs, temps > 0
+        if rng.random() < p_censure:
+            temps.append(t)             # censuré au temps simulé
+            evt.append(0)
+        else:
+            temps.append(t)
+            evt.append(1)
+    return {"temps": temps, "evenements": evt,
+            "x": {"expo": expo, "age": age}}
+
+
+def _sigmoide(v: float) -> float:
+    return 1.0 / (1.0 + math.exp(-v))
 
 
 def jeux() -> dict:
@@ -93,4 +135,10 @@ def jeux() -> dict:
         # gamma(1,5 ; 1,0) : nettement non normal ; scipy (method='interpolate')
         # donne stat ≈ 2,1783 / p = 0,01, sans avertissement numérique.
         "normalite_ko": _gamma_jeu(SEED + 20, 40, 1.5, 1.0),
+        # --- ajustement multivarié ------------------------------------------
+        "logis_simple": _jeu_logistique(SEED + 21, 240),
+        "cox_simple": _jeu_cox(SEED + 22, 300, 0.30, 0.6, -0.5,
+                               arrondi=True),
+        "cox_censure": _jeu_cox(SEED + 23, 260, 0.70, 0.5, 0.45,
+                                arrondi=True),
     }

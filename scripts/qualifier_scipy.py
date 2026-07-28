@@ -167,6 +167,147 @@ def _km_oracle(t1, e1, t2, e2) -> dict:
             "survie_g1": fin1, "survie_g2": fin2}
 
 
+def _logit_oracle(y: list, x: dict) -> dict:
+    """Contre-implémentation INDÉPENDANTE de la logistique : maximisation
+    directe de la log-vraisemblance par BFGS (scipy.optimize) avec jacobien
+    exact numpy — aucun IRLS, partageant seulement les primitives de lois."""
+    from scipy import optimize
+    noms = list(x)
+    yy = np.asarray(y, dtype=float)
+    X = np.column_stack([np.ones(len(y))] +
+                        [np.asarray(x[k], dtype=float) for k in noms])
+    p = X.shape[1]
+
+    def f(beta):
+        eta = X @ beta
+        return float(np.sum(np.logaddexp(0.0, eta)) - yy @ eta)
+
+    def jac(beta):
+        eta = X @ beta
+        mu = 1.0 / (1.0 + np.exp(-eta))
+        return X.T @ (mu - yy)
+
+    res = optimize.minimize(f, np.zeros(p), jac=jac, method="BFGS",
+                            options={"gtol": 1e-8, "maxiter": 2000})
+    # la line-search de BFGS échoue parfois par "precision loss" alors que
+    # l'optimum est atteint — critère propre : gradient final ~ 0.
+    gn = float(np.max(np.abs(jac(res.x))))
+    assert gn < 1e-5, f"BFGS logistique : gradients {gn:.3g}"
+    beta = res.x
+    eta = X @ beta
+    mu = 1.0 / (1.0 + np.exp(-eta))
+    w = mu * (1 - mu)
+    info = (X * w[:, None]).T @ X
+    cov = np.linalg.inv(info)
+    se = np.sqrt(np.diag(cov))
+    z95 = float(stats.norm.ppf(1 - ALPHA / 2))
+    ll = -f(beta)
+    p0 = float(np.clip(yy.mean(), 1e-6, 1 - 1e-6))
+    ll0 = len(y) * (p0 * math.log(p0) + (1 - p0) * math.log(1 - p0))
+    chi2 = 2 * (ll - ll0)
+    coefs = []
+    for j, nom in enumerate(noms, start=1):
+        b, s = float(beta[j]), float(se[j])
+        coefs.append({"covariable": nom, "beta": b, "se": s,
+                      "p_valeur": _x(2 * stats.norm.sf(abs(b / s))),
+                      "odds_ratio": math.exp(b),
+                      "ic95_or": [math.exp(b - z95 * s),
+                                  math.exp(b + z95 * s)]})
+    return {"coefficients": coefs,
+            "intercept_beta": float(beta[0]), "intercept_se": float(se[0]),
+            "log_vraisemblance": ll, "ll_modele_nul": ll0,
+            "chi2_modele": chi2, "p_valeur_modele": _x(stats.chi2.sf(chi2, len(noms))),
+            "pseudo_r2_mcfadden": 1 - ll / ll0,
+            "aic": -2 * ll + 2 * (len(noms) + 1)}
+
+
+def _cox_oracle(temps: list, evenements: list, x: dict) -> dict:
+    """Contre-implémentation INDÉPENDANTE du Cox-Breslow : BFGS sur la
+    log-vraisemblance partielle négative numpy + jacobien exact ; information
+    observée recalculée à l'optimum et inversée par numpy.linalg."""
+    from scipy import optimize
+    noms = list(x)
+    n = len(temps)
+    t = np.asarray(temps, dtype=float)
+    e = np.asarray(evenements, dtype=float)
+    # même centrage que l'implémentation qualifiée : invariant exact du modèle
+    X = np.column_stack([np.asarray(x[k], dtype=float) - np.mean(x[k])
+                         for k in noms])
+    p = X.shape[1]
+    t_evt = sorted(set(t[i] for i in range(n) if e[i] == 1.0))
+    risques = [np.flatnonzero(t >= te) for te in t_evt]
+    evts = [np.flatnonzero((t == te) & (e == 1.0)) for te in t_evt]
+
+    def f(beta):
+        eta = np.clip(X @ beta, -50, 50)
+        w = np.exp(eta)
+        ll = 0.0
+        for ris, ev in zip(risques, evts):
+            ll += float(eta[ev].sum()) - len(ev) * math.log(float(w[ris].sum()))
+        return -ll
+
+    def jac(beta):
+        eta = np.clip(X @ beta, -50, 50)
+        w = np.exp(eta)
+        g = np.zeros(p)
+        for ris, ev in zip(risques, evts):
+            s0 = w[ris].sum()
+            s1 = (w[ris, None] * X[ris]).sum(axis=0)
+            g += X[ev].sum(axis=0) - len(ev) * s1 / s0
+        return -g
+
+    res = optimize.minimize(f, np.zeros(p), jac=jac, method="BFGS",
+                            options={"gtol": 1e-8, "maxiter": 2000})
+    # idem — critère de convergence propre sur le gradient final.
+    gn = float(np.max(np.abs(jac(res.x))))
+    assert gn < 1e-5, f"BFGS cox : gradients {gn:.3g}"
+    beta = res.x
+    eta = np.clip(X @ beta, -50, 50)
+    w = np.exp(eta)
+    info = np.zeros((p, p))
+    for ris, ev in zip(risques, evts):
+        d = len(ev)
+        s0 = w[ris].sum()
+        s1 = (w[ris, None] * X[ris]).sum(axis=0)
+        xr = w[ris, None] * X[ris]
+        s2 = xr.T @ X[ris]
+        info += d * (s2 / s0 - np.outer(s1, s1) / (s0 * s0))
+    cov = np.linalg.inv(info)
+    se = np.sqrt(np.diag(cov))
+    z95 = float(stats.norm.ppf(1 - ALPHA / 2))
+    # test du score à beta = 0 (identique au log-rang si 1 covariable binaire)
+    eta0 = np.zeros(n)
+    w0 = np.ones(n)
+    u0 = np.zeros(p)
+    i0 = np.zeros((p, p))
+    for ris, ev in zip(risques, evts):
+        d = len(ev)
+        s0 = w0[ris].sum()
+        s1 = (w0[ris, None] * X[ris]).sum(axis=0)
+        xr = w0[ris, None] * X[ris]
+        s2 = xr.T @ X[ris]
+        u0 += X[ev].sum(axis=0) - d * s1 / s0
+        i0 += d * (s2 / s0 - np.outer(s1, s1) / (s0 * s0))
+    score = float(u0 @ np.linalg.inv(i0) @ u0)
+    coefs = []
+    for j, nom in enumerate(noms):
+        b, s = float(beta[j]), float(se[j])
+        coefs.append({"covariable": nom, "beta": b, "se": s,
+                      "p_valeur": _x(2 * stats.norm.sf(abs(b / s))),
+                      "hazard_ratio": math.exp(b),
+                      "ic95_hr": [math.exp(b - z95 * s),
+                                  math.exp(b + z95 * s)]})
+    # ll partielle au point optimum (sans clip pour la valeur gelée si sûr)
+    eta_fin = X @ beta
+    w_fin = np.exp(np.clip(eta_fin, -50, 50))
+    ll = 0.0
+    for ris, ev in zip(risques, evts):
+        ll += float(eta_fin[ev].sum()) - len(ev) * math.log(float(w_fin[ris].sum()))
+    return {"coefficients": coefs, "log_vraisemblance_partielle": ll,
+            "chi2_score_modele": score,
+            "p_valeur_modele": _x(stats.chi2.sf(score, p))}
+
+
 def réf_ops() -> dict:
     """Valeurs de référence des opérations du catalogue (oracles scipy)."""
     r: dict = {}
@@ -333,6 +474,13 @@ def réf_ops() -> dict:
             "statistique_a2_brute": _x(ad.statistic),
             "pvalue_scipy_interpolee": p_scipy,
             "verdict_scipy": "normal_ok" if p_scipy >= ALPHA else "non_normal"}
+
+    # --- ajustement multivarié (oracles BFGS indépendants) ------------------------
+    lg = J["logis_simple"]
+    r["regression_logistique:logis_simple"] = _logit_oracle(lg["y"], lg["x"])
+    for nom in ("cox_simple", "cox_censure"):
+        k = J[nom]
+        r[f"cox_ph:{nom}"] = _cox_oracle(k["temps"], k["evenements"], k["x"])
     return r
 
 

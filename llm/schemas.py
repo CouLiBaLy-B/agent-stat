@@ -24,7 +24,8 @@ ANALYSE_ITEM = {
     "properties": {
         "id": {"type": "string", "pattern": "^A[0-9][A-Za-z0-9]*$"},
         "role": {"type": "string", "enum": ["primaire", "secondaire",
-                                            "descriptif", "safety"]},
+                                            "descriptif", "safety",
+                                            "ajustement"]},
         "op": {"type": "string", "enum": sorted(OPS)},   # ← catalogue fermé
         "var": {"type": "string"},
         "par": {"type": "string"},
@@ -32,6 +33,11 @@ ANALYSE_ITEM = {
                       "items": {"type": "string"}},
         "par_temps": {"type": "string"},
         "marge": {"type": "number", "minimum": 0},
+        # ajustement multivarié pré-déclaré (A3) — catalogue borné, règles
+        # métier revérifiées en aval (covariables existantes, epv_min ≥ 5)
+        "covariables": {"type": "array", "minItems": 1,
+                        "items": {"type": "string"}},
+        "epv_min": {"type": "number", "minimum": 5},
         # volet observationnel (cas-témoins / cohorte) — modalités binaires
         # 0/1 au MVP (documenté ; strings refusées par le contrat)
         "var_exposition": {"type": "string"},

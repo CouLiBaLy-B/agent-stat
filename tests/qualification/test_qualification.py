@@ -33,6 +33,10 @@ from tests.qualification.reference_scipy import REFERENCE
 DIST_REL, DIST_ABS = 1e-10, 1e-12
 OPS_REL, OPS_ABS = 1e-9, 1e-12
 A2_REL = 1e-10
+# Modèles multivariés : IRLS/Newton (catalogue) vs BFGS (oracle) — deux
+# optimiseurs distincts convergent au même point à ~1e-9/1e-7 rel ; tolérance
+# fixée 60× au-dessus du mesuré (cf. docs/QUALIFICATION_SCIPY.md §3.4).
+MULTI_REL, MULTI_ABS = 1e-5, 1e-9
 
 J = jeux()
 D = REFERENCE["dist"]
@@ -69,7 +73,7 @@ class TestReferenceSaine(unittest.TestCase):
     def test_grilles_non_vides(self):
         self.assertEqual(len(D), 15)
         self.assertGreaterEqual(sum(len(v) for v in D.values()), 400)
-        self.assertEqual(len(O), 23)
+        self.assertEqual(len(O), 26)
 
 
 class TestDistQualification(unittest.TestCase):
@@ -373,6 +377,82 @@ class TestOpsQualification(unittest.TestCase):
             self.assertTrue(0.0 < out["p_valeur"] < 1.0)
             self.assertEqual(out["verdict"] == "normal_ok",
                              out["p_valeur"] >= 0.05, nom)
+
+    # --- ajustement multivarié (IRLS/Newton vs BFGS oracle) ---------------------
+
+    def _coefs_multivarie(self, ref: dict, out: dict, mesure: str,
+                          etiquette: str):
+        noms_ref = [c["covariable"] for c in ref["coefficients"]]
+        noms_out = [c["covariable"] for c in out["coefficients"]]
+        self.assertEqual(noms_out, noms_ref, etiquette)
+        for cr, cn in zip(ref["coefficients"], out["coefficients"]):
+            nom = cr["covariable"]
+            for cle_ref, cle_out in (("beta", "beta"), ("se", "se"),
+                                     ("p_valeur", "p_valeur"),
+                                     (mesure, mesure)):
+                self.assertTrue(
+                    proche(cn[cle_out], cr[cle_ref], MULTI_REL, MULTI_ABS),
+                    f"{etiquette}.{nom}.{cle_out} : {cn[cle_out]!r} vs "
+                    f"{cr[cle_ref]!r}")
+            cle_ic = "ic95_or" if mesure == "odds_ratio" else "ic95_hr"
+            for j in range(2):
+                self.assertTrue(
+                    proche(cn[cle_ic][j], cr[cle_ic][j], MULTI_REL, MULTI_ABS),
+                    f"{etiquette}.{nom}.{cle_ic}[{j}]")
+
+    def test_regression_logistique_vs_bfgs(self):
+        ref = O["regression_logistique:logis_simple"]
+        out = ops.regression_logistique(y=J["logis_simple"]["y"],
+                                        x=J["logis_simple"]["x"])
+        self.assertTrue(out["interpretable"])
+        self._coefs_multivarie(ref, out, "odds_ratio", "logis")
+        self.assertTrue(proche(out["intercept"]["beta"], ref["intercept_beta"],
+                               MULTI_REL, MULTI_ABS), "intercept.beta")
+        for cle in ("log_vraisemblance", "ll_modele_nul", "chi2_modele",
+                    "p_valeur_modele", "pseudo_r2_mcfadden", "aic"):
+            self.assertTrue(proche(out[cle], ref[cle], MULTI_REL, MULTI_ABS),
+                            f"logis.{cle} : {out[cle]!r} vs {ref[cle]!r}")
+        self.assertEqual(out["ddl_modele"], 2)
+
+    def test_cox_ph_vs_bfgs(self):
+        for nom in ("cox_simple", "cox_censure"):
+            ref = O[f"cox_ph:{nom}"]
+            out = ops.cox_ph(temps=J[nom]["temps"],
+                             evenements=J[nom]["evenements"], x=J[nom]["x"])
+            self.assertTrue(out["interpretable"], nom)
+            self._coefs_multivarie(ref, out, "hazard_ratio", nom)
+            for cle in ("log_vraisemblance_partielle", "chi2_score_modele",
+                        "p_valeur_modele"):
+                self.assertTrue(
+                    proche(out[cle], ref[cle], MULTI_REL, MULTI_ABS),
+                    f"{nom}.{cle} : {out[cle]!r} vs {ref[cle]!r}")
+            self.assertEqual(out["methode_ties"], "Breslow")
+
+    def test_cox_score_egale_logrank_si_groupe_binaire(self):
+        """Propriété théorique : SANS ex æquo sur les temps d'événements, le
+        test du score de Cox (-Breslow) à UNE covariable binaire coïncide avec
+        la statistique du log-rang — contrôle croisé interne, indépendant de
+        l'oracle. Les temps du jeu `cox_simple` sont déliés par epsilon
+        (l'égalité ne prétend rien sur les ex æquo massifs, où l'approximation
+        de Breslow diffère du log-rang — cf. doc QUALIFICATION)."""
+        k = J["cox_simple"]
+        expo = k["x"]["expo"]
+        n = len(expo)
+        temps = [k["temps"][i] + i * 1e-6 for i in range(n)]   # délié
+        t1 = [temps[i] for i in range(n) if expo[i] == 1.0]
+        e1 = [k["evenements"][i] for i in range(n) if expo[i] == 1.0]
+        t2 = [temps[i] for i in range(n) if expo[i] == 0.0]
+        e2 = [k["evenements"][i] for i in range(n) if expo[i] == 0.0]
+        lr = ops.km_logrank_hr(t1, e1, t2, e2)
+        cox = ops.cox_ph(temps=temps, evenements=k["evenements"],
+                         x={"expo": expo}, epv_min=1.0)
+        self.assertTrue(cox["interpretable"])
+        self.assertTrue(proche(cox["chi2_score_modele"], lr["chi2_logrank"],
+                               1e-9, 1e-9),
+                        f"cox score {cox['chi2_score_modele']!r} ≠ log-rang "
+                        f"{lr['chi2_logrank']!r}")
+        self.assertTrue(proche(cox["p_valeur_modele"], lr["p_valeur"],
+                               1e-6, 1e-9))
 
 
 if __name__ == "__main__":

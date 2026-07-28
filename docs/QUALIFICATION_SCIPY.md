@@ -43,7 +43,7 @@ scripts/
 `gamma_q` — y compris queues extrêmes (p. ex. `t_sf(30 ; 29) ≈ 1e-23`,
 `chi2_sf` jusqu'à ~1e-130, `norm_cdf(−8)`).
 
-**Opérations (`stats_catalogue/ops.py`)** — **23 paquets** sur jeux
+**Opérations (`stats_catalogue/ops.py`)** — **26 paquets** sur jeux
 déterministes (continu, ex æquo forcés par arrondi, cellules nulles,
 censure, échantillons déséquilibrés) :
 
@@ -58,6 +58,7 @@ censure, échantillons déséquilibrés) :
 | imputation | `pooling_rubin` | ré-implémentation indépendante des règles de Rubin |
 | descriptif | `descriptif_continu` (moyenne, sd, quartiles type 7, se), `smd_groupes` | `np.mean/std/percentile` |
 | normalité | `test_normalite` (Anderson-Darling) — cas spécial, §3.3 | `scipy.stats.anderson(method='interpolate')` |
+| ajustement | `regression_logistique` (IRLS), `cox_ph` (Newton, Breslow) — cas spécial, §3.4 | BFGS `scipy.optimize` avec jacobiens exacts (ré-implémentations indépendantes), inversions `numpy.linalg` |
 
 ## 3. Tolérances (mesurées, puis fixées avec marge)
 
@@ -106,6 +107,27 @@ Les jeux ont été **choisis** pour être interprétables par les deux
 familles (un gaussien « malchanceux » rejeté par scipy à p = 0,0138 a été
 écarté comme jeu `normalite_ok`, pour ne pas figer une discordance
 d'arête dans l'oracle).
+
+### 3.4 Modèles multivariés : `MULTI_REL = 1e-5`, `MULTI_ABS = 1e-9`
+
+Le `regression_logistique` (IRLS) et le `cox_ph` (Newton sur vraisemblance
+partielle de Breslow) du catalogue sont qualifiés contre des
+contre-implémentations **indépendantes** par nature : BFGS
+(`scipy.optimize.minimize`) avec jacobiens analytiques, matrices inversées
+par `numpy.linalg` — aucun code partagé avec le catalogue hors primitives
+de lois et jeux. La convergence de l'oracle est jugée sur la **norme du
+gradient final** (< 10⁻⁵), la line-search BFGS signalant parfois une
+« precision loss » alors que l'optimum est atteint (comportement documenté
+de scipy).
+
+Écarts mesurés (1 jeu logistique n = 240 ; 2 jeux Cox n = 300/260 dont
+ex æquo massifs et censure à 70 %) : **4,2e-9** en relatif max
+(logistique : β, se, IC, LL1/LL0, LRT, pseudo-R², AIC) et **1,7e-7**
+(Cox : β, se, HR, IC, LL partielle, χ² du score, p). Tolérances fixées à
+**×60** de marge. Contrôle croisé interne supplémentaire, indépendant de
+l'oracle : sans ex æquo sur les temps d'événements, le test du score de
+Cox à 1 covariable binaire **égale** la statistique du log-rang (propriété
+exacte, validée à 10⁻⁹).
 
 ## 4. Régénération de l'oracle
 
