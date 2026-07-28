@@ -27,7 +27,8 @@ sys.path.insert(0, str(RACINE_REPO))
 from core.audit import JournalAudit                         # noqa: E402
 from core.exceptions import PipelineBloque                  # noqa: E402
 from core.state import Etat                                 # noqa: E402
-from demo.jeu_donnees import generer                        # noqa: E402
+from demo.jeu_donnees import COMPTES_DEMO, generer          # noqa: E402
+from ui_gates import auth                                   # noqa: E402
 from orchestration.pipeline import construire_systeme, run_pipeline  # noqa: E402
 from orchestration.reprise import reprendre_pipeline        # noqa: E402
 
@@ -47,6 +48,13 @@ def main() -> int:
     RUNTIME.mkdir(parents=True)
     decisions = RUNTIME / "decisions.json"
     decisions.write_text("{}", encoding="utf-8")          # aucune décision
+    # Annuaire d'authentification obligatoire : plus aucune signature
+    # auto-déclarée — comptes démo (sels fixes, PBKDF2 réduit pour la démo).
+    auth.initialiser(RUNTIME / "comptes.json")
+    for ident, cpt in COMPTES_DEMO.items():
+        auth.ajouter_compte(RUNTIME / "comptes.json", ident, cpt["roles"],
+                            cpt["secret"], sel=cpt["sel"], iterations=10_000)
+    print("annuaire validateurs créé :", ", ".join(sorted(COMPTES_DEMO)))
     donnees = generer()
     (RUNTIME / "donnees.json").write_text(
         json.dumps(donnees, ensure_ascii=False), encoding="utf-8")
@@ -69,19 +77,31 @@ def main() -> int:
         print(f"   dossier de preuves exporté ✔ ({p_md.name})")
     assert CKPT_BLOQUE.exists()
 
-    print("== 2) tentative de signature avec un rôle non habilité ==")
+    print("== 2) mauvais secret → authentification refusée ==")
     r = _cli("sign", "--racine", str(RUNTIME), "--gate", "G3",
-             "--etat", str(CKPT_BLOQUE),
-             "--validateur", "u:stagiaire-9", "--role", "stagiaire",
+             "--etat", str(CKPT_BLOQUE), "--comptes", str(RUNTIME / "comptes.json"),
+             "--validateur", "u:bio-042", "--secret", "pas-le-bon-secret",
+             "--decision", "VALIDATED",
+             "--motif", "validation sans preuve de compte",
+             "--pieces", "sap")
+    assert r.returncode == 2 and "authentification refusée" in r.stderr
+    print(f"   refus fail-closed ✔ ({r.stderr.strip()[:70]}…)")
+
+    print("== 2b) compte authentifié, rôle non habilité au gate ==")
+    r = _cli("sign", "--racine", str(RUNTIME), "--gate", "G3",
+             "--etat", str(CKPT_BLOQUE), "--comptes", str(RUNTIME / "comptes.json"),
+             "--validateur", "u:stagiaire-9",
+             "--secret", COMPTES_DEMO["u:stagiaire-9"]["secret"],
              "--decision", "VALIDATED", "--motif", "validation sans compétence",
              "--pieces", "sap")
-    assert r.returncode == 2 and "non habilité" in r.stderr
+    assert r.returncode == 2 and "habilit" in r.stderr
     print(f"   refus fail-closed ✔ ({r.stderr.strip()[:80]}…)")
 
     print("== 3) signature G3 par un biostatisticien (CLI, liaison auto) ==")
     r = _cli("sign", "--racine", str(RUNTIME), "--gate", "G3",
-             "--etat", str(CKPT_BLOQUE),
-             "--validateur", "u:bio-042", "--role", "biostatisticien",
+             "--etat", str(CKPT_BLOQUE), "--comptes", str(RUNTIME / "comptes.json"),
+             "--validateur", "u:bio-042",
+             "--secret", COMPTES_DEMO["u:bio-042"]["secret"],
              "--decision", "VALIDATED",
              "--motif", "SAP conforme ICH E9, endpoint unique, fallback pré-spécifié",
              "--pieces", "sap", "dq_report")
@@ -127,8 +147,9 @@ def main() -> int:
 
     print("== 5) signature G6 + reprise finale ==")
     r = _cli("sign", "--racine", str(RUNTIME), "--gate", "G6",
-             "--etat", str(CKPT_BLOQUE),
-             "--validateur", "u:dir-007", "--role", "responsable_etude",
+             "--etat", str(CKPT_BLOQUE), "--comptes", str(RUNTIME / "comptes.json"),
+             "--validateur", "u:dir-007",
+             "--secret", COMPTES_DEMO["u:dir-007"]["secret"],
              "--decision", "VALIDATED",
              "--motif", "Résultats reproductibles, limites documentées, aucun signal",
              "--pieces", "rapport_draft", "critique", "safety_report",

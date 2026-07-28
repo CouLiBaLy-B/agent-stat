@@ -22,6 +22,8 @@ import hashlib
 import json
 from datetime import datetime, timezone
 
+from core import eidas as eidas_moteur
+
 FORMAT_SIG = "sig-2.0.0"
 NIVEAU_SIG = "SES_REFERENCE_TRACABLE"
 CHAMPS_LIES = ("gate_id", "validateur_id", "statut", "motif", "pieces",
@@ -111,3 +113,30 @@ def verifier_preuve(gate_id: str, decision: dict) -> bool:
         decision["artefact_sha256"],
         preuve.get("horodatage_utc") or "")
     return calcule == preuve.get("empreinte")
+
+
+def verifier_cachets_eidas(preuve: dict) -> bool:
+    """Intégrité des cachets eIDAS de la preuve (cachet de signature simulé
+    et/ou jeton d'horodatage qualifié simulé), chacun COUVRANT l'empreinte
+    sig-2.0.0 exacte.
+
+    Rétrocompatible : une preuve sans cachet (mode PSCE off → `eidas` à
+    None) est recevable ici — c'est la console qui décide d'en exiger.
+    Toute altération d'un cachet présent (valeur, certificat retouché,
+    gen_time changé sans recalcul) ⇒ False → blocage GATE_CACHET_INVALIDE.
+    """
+    eidas = (preuve or {}).get("eidas") or {}
+    cachet = eidas.get("cachet_signature")
+    jeton = eidas.get("horodatage_qualifie")
+    if cachet is None and jeton is None:
+        return True
+    empreinte = (preuve or {}).get("empreinte")
+    if not empreinte:
+        return False
+    if cachet is not None and not eidas_moteur.verifier_cachet(
+            cachet, empreinte):
+        return False
+    if jeton is not None and not eidas_moteur.verifier_jeton_tsa(
+            jeton, empreinte):
+        return False
+    return True

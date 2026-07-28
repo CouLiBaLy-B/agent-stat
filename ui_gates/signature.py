@@ -12,9 +12,14 @@ Une décision n'est écrite que si TOUS les contrôles passent :
 
 À l'écriture : preuve `sig-2.0.0` empreintée sur (gate, validateur, statut,
 motif, pièces triées, artefact_ref, artefact_sha256, horodatage) + bloc
-eIDAS réservé — cf. core/signature.py. Écriture atomique du registre
-(fusion sans écraser les autres gates) + événement chaîné au journal
-d'audit. Toute violation lève RegleSignature.
+eIDAS — cf. core/signature.py. Si un prestataire `psce` est branché (mode
+simulateur ou PSCQ réel derrière le même contrat), les champs eIDAS
+réservés sont REMPLIS : cachet couvrant l'empreinte exacte + horodatage
+qualifié (simulés tant que le PSCQ n'est pas branché). Un prestataire
+indisponible pour ce validateur lève PSCEIndisponible — jamais de
+dégradation silencieuse en SES. Écriture atomique du registre (fusion sans
+écraser les autres gates) + événement chaîné au journal d'audit. Toute
+violation lève RegleSignature.
 """
 from __future__ import annotations
 
@@ -73,8 +78,15 @@ def fabriquer_signature(gate_id: str, validateur_id: str, statut: str,
 
 def deposer_decision(decisions_path: str | Path, audit: JournalAudit,
                      gate_id: str, decision: dict,
-                     roles_requis: list[str]) -> dict:
-    """Fusionne la décision liée dans le registre (atomique) + audit chaîné."""
+                     roles_requis: list[str], psce=None) -> dict:
+    """Fusionne la décision liée dans le registre (atomique) + audit chaîné.
+
+    `psce` optionnel : prestataire de cachets (contrat ui_gates/eidas.
+    ServicePSCE). S'il est fourni, la preuve est enrichie du bloc eIDAS
+    (cachet couvrant l'empreinte sig-2.0.0 + horodatage qualifié) ; toute
+    impossibilité (certificat absent, niveau insuffisant) propage
+    PSCEIndisponible AVANT toute écriture — dépôt refusé, fail-closed.
+    """
     verifier_recevabilite(decision, roles_requis)
     decision = dict(decision)
     decision["signature_ref"], decision["preuve_signature"] = \
@@ -82,6 +94,11 @@ def deposer_decision(decisions_path: str | Path, audit: JournalAudit,
             gate_id, decision["validateur_id"], decision["statut"],
             decision["motif"], decision["pieces_consultees"],
             decision["artefact_ref"], decision["artefact_sha256"])
+    if psce is not None:
+        preuve = dict(decision["preuve_signature"])
+        preuve["eidas"] = psce.fabrique_eidas(
+            decision["validateur_id"], preuve["empreinte"], gate_id)
+        decision["preuve_signature"] = preuve
     decision["depose_le"] = datetime.now(timezone.utc).isoformat()
 
     chemin = Path(decisions_path)
@@ -95,11 +112,14 @@ def deposer_decision(decisions_path: str | Path, audit: JournalAudit,
     tmp.write_bytes(brut)
     tmp.replace(chemin)                                   # écriture atomique
 
+    eidas = decision["preuve_signature"].get("eidas") or {}
     audit.log(decision["validateur_id"], f"GATE_DECISION_DEPOSEE:{gate_id}", {
         "statut": decision["statut"], "role": decision["role"],
         "motif": decision["motif"], "signature": decision["signature_ref"],
         "artefact_ref": decision["artefact_ref"],
         "artefact_sha256": decision["artefact_sha256"],
         "empreinte_preuve": decision["preuve_signature"]["empreinte"],
-        "pieces": decision["pieces_consultees"]})
+        "pieces": decision["pieces_consultees"],
+        "eidas_niveau": eidas.get("niveau_actuel"),
+        "cachet_eidas": eidas.get("cachet_signature") is not None})
     return decision

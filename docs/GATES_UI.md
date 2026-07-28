@@ -44,8 +44,15 @@ habilité. L'échec de l'export est journalisé et **ne masque jamais l'attente*
 
 ## 3. Signature (`ui_gates/signature.py` + `cli.py`)
 
+Provisionnement préalable : `python3 -m ui_gates.cli comptes init|add`
+(annuaire PBKDF2 — jamais de secret en clair).
+
 Recevabilité — **toute violation refuse l'écriture** (code 2, registre inchangé) :
 
+- **authentification obligatoire** : le validateur prouve son compte
+  (secret vs annuaire PBKDF2 salé, anti force brute, annuaire absent ⇒
+  refus) — le rôle est **lu dans l'annuaire**, jamais auto-déclaré
+  (`--role` = cohérence/désambiguation) — cf. `docs/SECURITE_GATES.md` ;
 - `statut ∈ {VALIDATED, REFUSED}` (aucune autre valeur, aucun défaut) ;
 - `role ∈ ROLES_GATES[gate]` (ex. G3 : biostatisticien) ;
 - `motif ≥ 10 caractères` ; `pieces_consultees` non vide ;
@@ -53,7 +60,11 @@ Recevabilité — **toute violation refuse l'écriture** (code 2, registre incha
   `artefact_sha256` sont résolus automatiquement par la CLI depuis le store
   (`--etat`, requis) — impossible de signer sans désigner ce qu'on valide ;
 - preuve **sig-2.0.0** : `signature_ref` horodatée + empreinte recoalculable
-  liée à la version (bloc eIDAS réservé) — cf. `docs/SIGNATURE_LIAISON.md` ;
+  liée à la version — cf. `docs/SIGNATURE_LIAISON.md` ; mode PSCE
+  (`AGENT_STAT_PSCE_MODE=simulateur`) : **cachet + horodatage qualifié
+  simulés** couvrant l'empreinte (certificat exigé, niveau ≥ AES_SIMULE),
+  intégrité vérifiée au gate (`GATE_CACHET_INVALIDE`) — cf.
+  `docs/SECURITE_GATES.md` ;
 - horodatage de dépôt `depose_le` (mesure du SLA, §3.bis) ;
 - écriture atomique (fusion, jamais d'écrasement des autres gates) ;
 - événement `GATE_DECISION_DEPOSEE:<G>` chaîné au journal (voir §5).
@@ -64,9 +75,12 @@ motif — **l'entrée vide = abandon**, jamais de validation par défaut.
 ```bash
 python3 -m ui_gates.cli sign --racine runtime/x --gate G3 \
     --etat runtime/x/checkpoints/ckpt_<run>_BLOQUE.json \
-    --validateur u:bio-042 --role biostatisticien --decision VALIDATED \
+    --comptes runtime/x/comptes.json \
+    --validateur u:bio-042 --decision VALIDATED \
     --motif "SAP conforme ICH E9, endpoint unique, fallback pré-spécifié" \
-    --pieces sap dq_report
+    --pieces sap dq_report                  # secret : --secret / $AGENT_STAT_SIGN_SECRET / saisie masquée
+# avec cachet + horodatage qualifié SIMULÉS (cf. SECURITE_GATES.md) :
+AGENT_STAT_PSCE_MODE=simulateur python3 -m ui_gates.cli sign ... --psce simulateur
 python3 -m ui_gates.cli status --racine runtime/x --etat checkpoints/ckpt_..._BLOQUE.json
 python3 -m ui_gates.cli resume --racine runtime/x --etat checkpoints/ckpt_..._BLOQUE.json \
     --donnees donnees.json            # rc 0 = TERMINE · rc 3 = nouvelle attente

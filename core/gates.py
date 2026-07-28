@@ -13,6 +13,11 @@ LIAISON SIGNATURE ↔ VERSION D'ARTEFACT (sig-2.0.0)
     2. porter `depose_le` (horodatage de dépôt) et une `preuve_signature`
        intègre (empreinte recalculée — toute retouche du registre de
        décisions après dépôt est détectée et bloque) ;
+    2b. si la preuve porte des CACHETS eIDAS (mode PSCE), chacun doit être
+        intègre (cachet de signature simulé et/ou jeton d'horodatage
+        recalculé sur l'empreinte couverte — retouche ⇒ blocage
+        `GATE_CACHET_INVALIDE:<G>`) ; absence de cachet : recevable ici
+        (c'est la console qui décide d'en exiger via le mode PSCE) ;
   sinon → GateExpire (fail-closed). Appels sans sha256 (tests unitaires du
   gestionnaire seul) : contrôles de recevabilité classiques uniquement.
 
@@ -176,6 +181,15 @@ class GestionnaireGates:
                 gate_id,
                 "registre de décisions altéré après dépôt : empreinte de la "
                 "preuve sig-2.0.0 ≠ empreinte recalculée — fail-closed")
+        if not sig.verifier_cachets_eidas(d.get("preuve_signature") or {}):
+            self.audit.log("orchestrateur",
+                           f"GATE_CACHET_INVALIDE:{gate_id}",
+                           {"signature": d.get("signature_ref")})
+            raise GateExpire(
+                gate_id,
+                "cachet eIDAS altéré (valeur, certificat ou horodatage "
+                "retouché sans recalcul de l'empreinte couverte) — "
+                "fail-closed")
 
     def _mesurer_sla(self, gate_id: str, artefact_ref: str, sla_h: int,
                      d: dict) -> None:

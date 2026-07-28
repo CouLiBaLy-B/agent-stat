@@ -104,6 +104,57 @@ def generer(seed: int = 20260727, n_par_groupe: int = 30,
     }
 
 
+# --------------------------------------------------------------------------
+# Annuaire d'authentification des validateurs (démo UNIQUEMENT).
+#
+# `secret` n'existe en clair QUE dans cette démo synthétique : la console
+# n'en stocke jamais la valeur (PBKDF2-HMAC-SHA256 salé, cf. ui_gates/auth).
+# `sel` fixé ⇒ annuaire déterministe (tests/démos reproductibles) ; ne
+# JAMAIS injecter de sel en production (défaut : secrets.token_hex).
+COMPTES_DEMO = {
+    "u:bio-042": {"roles": ["biostatisticien"],
+                  "secret": "bio-demo-2026",
+                  "sel": "d3f1cb0a0e4a4b01"},
+    "u:dir-007": {"roles": ["responsable_etude"],
+                  "secret": "dir-demo-2026",
+                  "sel": "b2c48d1f9a3344aa"},
+    "u:stagiaire-9": {"roles": ["stagiaire"],
+                      "secret": "stag-demo-2026",
+                      "sel": "aa55c1df0022ee11"},
+    "u:tech-003": {"roles": ["technicien"],
+                   "secret": "tech-demo-2026",
+                   "sel": "0f3a77be91c4d210"},
+}
+
+# Certificats PSCE (fiches PUBLIQUES — jamais de clé) pour le cachet eIDAS
+# SIMULÉ branché derrière `ui_gates/eidas.py`. Structure = cible PSCQ réel
+# (sujet / émetteur / série / période de validité / niveau / qualifié) ; les
+# cachets produits restent recalculables publiquement → PAS de cryptographie,
+# PSCQ + RFC 3161 réels requis en production derrière le même contrat.
+CERTIFICATS_PSCE_DEMO = {
+    "u:bio-042": {
+        "sujet": "CN=Biostat Demo 042, O=Cosmetique Demo SAS, C=FR",
+        "emetteur": "CN=PSCE Demo CA, O=PSCE-DEMO, C=FR",
+        "serie": "PSCE-2026-0042",
+        "debut": "2026-01-01T00:00:00Z", "fin": "2027-12-31T23:59:59Z",
+        "niveau": "QES_SIMULE", "qualifie": True},
+    "u:dir-007": {
+        "sujet": "CN=Direction Etudes 007, O=Cosmetique Demo SAS, C=FR",
+        "emetteur": "CN=PSCE Demo CA, O=PSCE-DEMO, C=FR",
+        "serie": "PSCE-2026-0007",
+        "debut": "2026-01-01T00:00:00Z", "fin": "2027-12-31T23:59:59Z",
+        "niveau": "AES_SIMULE", "qualifie": True},
+    "u:tech-003": {
+        "sujet": "CN=Technicien 003, O=Cosmetique Demo SAS, C=FR",
+        "emetteur": "CN=PSCE Demo CA, O=PSCE-DEMO, C=FR",
+        "serie": "PSCE-2026-0003",
+        "debut": "2026-01-01T00:00:00Z", "fin": "2026-12-31T23:59:59Z",
+        "niveau": "SES", "qualifie": False},   # insuffisant pour les gates
+    # u:stagiaire-9 : volontairement AUCUN certificat — la console refuse le
+    # dépôt en mode PSCE (fail-closed, aucune dégradation silencieuse).
+}
+
+
 # Gabarits de décisions de gates (substance métier UNIQUEMENT) : la liaison
 # à la version d'artefact (ref + sha256), la preuve sig-2.0.0 et l'horodatage
 # de dépôt sont calculés par `ui_gates.liaison` (pré-liaison par rejeu

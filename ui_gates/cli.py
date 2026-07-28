@@ -1,27 +1,43 @@
 """CLI des gates humains (stdlib) — signature et reprise FAIL-CLOSED.
 
 Commandes :
+  comptes : annuaire d'authentification (init / add) — PBKDF2-HMAC-SHA256
+            salé par compte, écriture atomique, jamais de secret en clair
   export  : (ré)écrit le dossier de preuves d'un gate (md + json)
-  sign    : dépose une décision recevable (rôle, motif, pièces exigés)
-            LIÉE automatiquement à la version courante de l'artefact
-            (ref + sha256 résolus depuis le store via --etat) + preuve
-            sig-2.0.0 — impossible de signer sans désigner ce qu'on valide
+  sign    : AUTHENTIFIE le validateur contre l'annuaire (secret prouvé, compte
+            actif, anti force brute) puis dépose une décision recevable (motif,
+            pièces exigés) LIÉE automatiquement à la version courante de
+            l'artefact (ref + sha256 résolus depuis le store via --etat) +
+            preuve sig-2.0.0. Le rôle n'est JAMAIS auto-déclaré : il est lu
+            dans l'annuaire (--role = contrôle de cohérence / désambiguation).
+            Si le mode PSCE est actif, la preuve est scellée (cachet +
+            horodatage qualifié SIMULÉS — cf. ui_gates/eidas.py) ; validateur
+            sans certificat ou niveau insuffisant ⇒ refus, aucune dégradation.
   status  : affiche l'état du pipeline et le gate en attente
   resume  : rejoue le pipeline bloqué après signature (rejeu déterministe)
 
+Secrets : --secret, ou $AGENT_STAT_SIGN_SECRET, ou saisie masquée
+(--interactif). Mode PSCE : --psce ou $AGENT_STAT_PSCE_MODE (off|simulateur).
+
 Exemples :
+  python3 -m ui_gates.cli comptes init --comptes runtime/obs/comptes.json
+  python3 -m ui_gates.cli comptes add --comptes runtime/obs/comptes.json \
+      --ident u:bio-042 --roles biostatisticien
   python3 -m ui_gates.cli status --racine runtime/obs --etat ckpt.json
   python3 -m ui_gates.cli sign --racine runtime/obs --gate G3 \
       --etat checkpoints/ckpt_<run>_BLOQUE.json \
-      --validateur u:bio-042 --role biostatisticien --decision VALIDATED \
-      --motif "SAP conforme ICH E9" --pieces sap dq_report
+      --validateur u:bio-042 --decision VALIDATED \
+      --motif "SAP conforme ICH E9" --pieces sap dq_report \
+      --psce simulateur
   python3 -m ui_gates.cli resume --racine runtime/obs --etat ckpt.json \
       --donnees donnees.json
 """
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -32,8 +48,12 @@ from core.audit import JournalAudit                          # noqa: E402
 from core.state import Etat                                  # noqa: E402
 from core.store import StoreArtefacts                        # noqa: E402
 from orchestration.pipeline import ROLES_GATES               # noqa: E402
+from ui_gates import auth                                    # noqa: E402
 from ui_gates import dossier as dossier_mod                  # noqa: E402
+from ui_gates import eidas as eidas_mod                      # noqa: E402
 from ui_gates.signature import RegleSignature, deposer_decision  # noqa: E402
+
+ENV_SECRET_SIGN = "AGENT_STAT_SIGN_SECRET"
 
 ARTEFACTS_GATES = {
     "G1": ("intention", "intention"),
@@ -96,6 +116,67 @@ def cmd_export(args) -> int:
     return 0
 
 
+def _secret_signataire(args, usage: str) -> str:
+    """Ordre : --secret > $AGENT_STAT_SIGN_SECRET > saisie masquée (interactif).
+    Jamais de secret en clair dans un fichier, jamais journalisé."""
+    secret = args.secret or os.environ.get(ENV_SECRET_SIGN)
+    if secret:
+        return secret
+    if args.interactif:
+        return getpass.getpass(
+            f"Secret du compte {args.validateur or args.ident} "
+            f"({usage}, jamais affiché ni journalisé) : ")
+    raise ErreurUsage(
+        f"secret manquant (--secret ou ${ENV_SECRET_SIGN}) — fail-closed : "
+        "la console refuse toute opération non authentifiée")
+
+
+def _role_du_compte(roles_compte: list[str], role_demande: str | None,
+                    roles_gate: list[str], gate_id: str) -> str:
+    """Le rôle déposé est LU DANS L'ANNUAIRE (jamais auto-déclaré).
+    --role sert de contrôle de cohérence et de désambiguation quand le
+    compte cumule plusieurs rôles habilités au gate."""
+    eligibles = ([r for r in roles_compte if r in roles_gate]
+                 if roles_gate else list(roles_compte))
+    if role_demande:
+        if role_demande not in roles_compte:
+            raise ErreurUsage(
+                f"rôle {role_demande!r} absent de l'annuaire du compte — le "
+                "rôle n'est plus auto-déclaré, il est lu dans l'annuaire")
+        if roles_gate and role_demande not in roles_gate:
+            raise ErreurUsage(
+                f"rôle {role_demande!r} non habilité au gate {gate_id} — "
+                f"rôles recevables : {roles_gate}")
+        return role_demande
+    if not eligibles:
+        raise ErreurUsage(
+            f"aucun rôle du compte {sorted(roles_compte)} n'est habilité au "
+            f"gate {gate_id} — rôles recevables : {roles_gate}")
+    if len(eligibles) > 1:
+        raise ErreurUsage(
+            f"plusieurs rôles du compte habilités au gate {gate_id} "
+            f"{sorted(eligibles)} — préciser --role (lu dans l'annuaire, "
+            "pas auto-déclaré)")
+    return eligibles[0]
+
+
+def cmd_comptes(args) -> int:
+    if args.action == "init":
+        apercu = auth.initialiser(args.comptes)
+        print(f"✔ annuaire initialisé : {args.comptes} "
+              f"({len(apercu['comptes'])} compte)")
+        return 0
+    args.secret = args.secret or os.environ.get(ENV_SECRET_SIGN)
+    if not args.secret:
+        args.secret = getpass.getpass(
+            f"Secret du nouveau compte {args.ident} (jamais affiché) : ")
+    compte = auth.ajouter_compte(args.comptes, args.ident, args.roles,
+                                 args.secret, sel=args.sel)
+    print(f"✔ compte {args.ident} enregistré (rôles {compte['roles']}, "
+          f"PBKDF2 {compte['iterations']} itérations)")
+    return 0
+
+
 def cmd_sign(args) -> int:
     roles = ROLES_GATES.get(args.gate, [])
     # LIAISON OBLIGATOIRE : la version signée est résolue depuis le store.
@@ -103,8 +184,27 @@ def cmd_sign(args) -> int:
     store = _store(args.racine)
     art = _resoudre_artefact_gate(store, etat.study_id, args.gate,
                                   args.artefact)
+
+    # AUTHENTIFICATION OBLIGATOIRE — annuaire PBKDF2, anti force brute ;
+    # le rôle est lu dans l'annuaire (jamais auto-déclaré recevable).
+    chemin_comptes = args.comptes or str(Path(args.racine) / "comptes.json")
+    secret = _secret_signataire(args, "authentification signature")
+    compte = auth.authentifier(chemin_comptes, args.validateur, secret)
+    role = _role_du_compte(compte.get("roles") or [], args.role, roles,
+                           args.gate)
+    print(f"✔ compte authentifié : {args.validateur} (rôle déposé : {role})")
+
+    # PSCE : off (SES référence chaînée, architecture historique) ou
+    # simulateur (cachet + horodatage qualifié simulés — certificat exigé).
+    psce = eidas_mod.resoudre_psce(mode=args.psce)
+    if psce is not None:
+        cert = psce.certificat_du(args.validateur)      # fail-closed sinon
+        print(f"✔ PSCE {psce.mode} : certificat {cert.get('serie')} "
+              f"(niveau {cert.get('niveau')}, émetteur "
+              f"{cert.get('emetteur', '?')[:40]}…)")
+
     decision = {"statut": args.decision, "validateur_id": args.validateur,
-                "role": args.role, "motif": args.motif,
+                "role": role, "motif": args.motif,
                 "pieces_consultees": args.pieces,
                 "artefact_ref": art.ref, "artefact_sha256": art.sha256}
     if args.interactif:
@@ -126,14 +226,19 @@ def cmd_sign(args) -> int:
         audit = JournalAudit(Path(args.racine) / "audit.jsonl")
         ecrite = deposer_decision(
             Path(args.racine) / "decisions.json", audit, args.gate, decision,
-            roles)
-    except RegleSignature as e:
+            roles, psce=psce)
+    except (RegleSignature, eidas_mod.PSCEIndisponible) as e:
         print(f"✘ décision refusée (fail-closed) : {e}", file=sys.stderr)
         return 2
     print(f"✔ décision {ecrite['statut']} enregistrée pour {args.gate} "
           f"({ecrite['signature_ref']})")
     print(f"  liée à {ecrite['artefact_ref']} "
           f"sha256:{ecrite['artefact_sha256'][:16]}…")
+    eidas = ecrite["preuve_signature"].get("eidas") or {}
+    if eidas.get("cachet_signature"):
+        jeton = (eidas.get("horodatage_qualifie") or {}).get("gen_time_utc")
+        print(f"  cachet eIDAS {eidas.get('niveau_actuel')} + horodatage "
+              f"qualifié simulé {jeton} — intégrité vérifiée au gate")
     return 0
 
 
@@ -160,6 +265,11 @@ def cmd_status(args) -> int:
                        if d.get("artefact_ref") else " — NON LIÉE")
             print(f"    {g} : {d.get('statut')} par {d.get('validateur_id')} "
                   f"(rôle {d.get('role')}){liaison}")
+            eidas = (d.get("preuve_signature") or {}).get("eidas") or {}
+            if eidas.get("cachet_signature"):
+                print(f"        cachet {eidas.get('niveau_actuel')} + "
+                      f"horodatage qualifié simulé "
+                      f"{(eidas.get('horodatage_qualifie') or {}).get('gen_time_utc')}")
     else:
         print("  aucune décision déposée")
     return 0
@@ -190,6 +300,26 @@ def construire_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sous = p.add_subparsers(dest="commande", required=True)
 
+    c = sous.add_parser("comptes", help="annuaire d'authentification : init / "
+                                        "add (PBKDF2 salé, jamais de secret "
+                                        "en clair)")
+    csous = c.add_subparsers(dest="action", required=True)
+    ci = csous.add_parser("init", help="crée un annuaire vide (refuse "
+                                       "d'écraser un annuaire existant)")
+    ci.add_argument("--comptes", required=True)
+    ca = csous.add_parser("add", help="ajoute un compte validateur")
+    ca.add_argument("--comptes", required=True)
+    ca.add_argument("--ident", required=True)
+    ca.add_argument("--roles", nargs="+", required=True)
+    ca.add_argument("--secret", default=None,
+                    help=f"sinon ${ENV_SECRET_SIGN} ou saisie masquée")
+    ca.add_argument("--sel", default=None,
+                    help="sel hex FIXE — tests/démos DÉTERMINISTES "
+                         "uniquement (jamais en production)")
+    ca.add_argument("--interactif", action="store_true")
+    ca.add_argument("--validateur", default=None, help=argparse.SUPPRESS)
+    c.set_defaults(fn=cmd_comptes)
+
     e = sous.add_parser("export", help="écrit le dossier de preuves d'un gate")
     e.add_argument("--racine", required=True)
     e.add_argument("--etat", required=True, help="checkpoint JSON de l'état")
@@ -207,7 +337,20 @@ def construire_parser() -> argparse.ArgumentParser:
                    help="checkpoint JSON (résout l'étude et la version "
                         "d'artefact à lier — jamais de signature aveugle)")
     s.add_argument("--validateur", required=True)
-    s.add_argument("--role", required=True)
+    s.add_argument("--secret", default=None,
+                   help=f"preuve du compte — sinon ${ENV_SECRET_SIGN} ou "
+                        "saisie masquée (--interactif) ; jamais en fichier")
+    s.add_argument("--comptes", default=None,
+                   help="annuaire PBKDF2 (défaut : <racine>/comptes.json) — "
+                        "absent ⇒ refus (jamais d'auto-déclaration)")
+    s.add_argument("--role", default=None,
+                   help="contrôle de cohérence / désambiguation — le rôle "
+                        "déposé est TOUJOURS lu dans l'annuaire")
+    s.add_argument("--psce", default=None,
+                   choices=list(eidas_mod.MODES),
+                   help="off (défaut historique) | simulateur (cachet + "
+                        "horodatage qualifié simulés) — sinon "
+                        "$AGENT_STAT_PSCE_MODE")
     s.add_argument("--decision", default=None,
                    choices=["VALIDATED", "REFUSED"])
     s.add_argument("--motif", default="")
@@ -238,7 +381,8 @@ def main(argv: list[str] | None = None) -> int:
     args = construire_parser().parse_args(argv)
     try:
         return args.fn(args)
-    except (ErreurUsage, OSError, json.JSONDecodeError, KeyError) as e:
+    except (ErreurUsage, auth.AuthRefusee, eidas_mod.PSCEIndisponible,
+            OSError, json.JSONDecodeError, KeyError) as e:
         print(f"✘ {e}", file=sys.stderr)
         return 2
 

@@ -15,7 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.state import Etat                                  # noqa: E402
 from orchestration.pipeline import construire_systeme        # noqa: E402
+from ui_gates import auth                                    # noqa: E402
 from ui_gates.liaison import ecrire_decisions_liees          # noqa: E402
+from demo.jeu_donnees import COMPTES_DEMO                    # noqa: E402
 
 
 def ecrire_decisions(chemin_decisions: Path, templates: dict, etat: Etat,
@@ -23,6 +25,28 @@ def ecrire_decisions(chemin_decisions: Path, templates: dict, etat: Etat,
     """Écrit les décisions LIÉES (pré-liaison par rejeu déterministe)."""
     return ecrire_decisions_liees(chemin_decisions, templates, etat, donnees,
                                   llm=llm)
+
+
+SECRET_DEMO = {ident: c["secret"] for ident, c in COMPTES_DEMO.items()}
+
+
+def creer_comptes_demo(racine: Path, iterations: int = 10_000) -> Path:
+    """Annuaire d'authentification de TEST (comptes démo, sels fixes,
+    itérations réduites pour la vitesse) — la console refuse toute signature
+    sans lui. Jamais utilisé hors tests/démos."""
+    chemin = Path(racine) / "comptes.json"
+    auth.initialiser(chemin)
+    for ident, c in COMPTES_DEMO.items():
+        auth.ajouter_compte(chemin, ident, c["roles"], c["secret"],
+                            sel=c["sel"], iterations=iterations)
+    return chemin
+
+
+def args_sign(racine: Path, validateur: str) -> list[str]:
+    """Arguments CLI `sign` de test : annuaire + preuve de compte (le rôle
+    est lu dans l'annuaire — jamais auto-déclaré)."""
+    return ["--comptes", str(Path(racine) / "comptes.json"),
+            "--secret", SECRET_DEMO[validateur]]
 
 
 def environnement(racine_rt: str, chemin_decisions: Path, templates: dict,

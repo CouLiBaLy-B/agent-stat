@@ -20,6 +20,7 @@ from core.store import StoreArtefacts
 from demo.jeu_donnees import DECISIONS_OK, generer
 from orchestration.pipeline import construire_systeme, run_pipeline
 from orchestration.reprise import reprendre_pipeline
+from tests import outillage
 from tests.outillage import environnement
 from ui_gates import cli, dossier as dossier_mod
 from ui_gates.signature import RegleSignature, deposer_decision
@@ -267,6 +268,7 @@ class TestCLI(unittest.TestCase):
                     str(racine), str(racine / "decisions.json"),
                     backoff_base_s=0.0), donnees)
             ckpt = sorted((racine / "checkpoints").glob("ckpt_*.json"))[-1]
+            outillage.creer_comptes_demo(racine)
 
             buf = io.StringIO()
             with redirect_stdout(buf):
@@ -277,7 +279,8 @@ class TestCLI(unittest.TestCase):
 
             rc = cli.main(["sign", "--racine", str(racine), "--gate", "G3",
                            "--etat", str(ckpt),
-                           "--validateur", "u:bio-1", "--role", "biostatisticien",
+                           "--validateur", "u:bio-042",
+                           *outillage.args_sign(racine, "u:bio-042"),
                            "--decision", "VALIDATED",
                            "--motif", "SAP relu, endpoint unique et verrou OK",
                            "--pieces", "sap", "dq_report"])
@@ -287,10 +290,12 @@ class TestCLI(unittest.TestCase):
                             .startswith("art://sap/"))
             self.assertEqual(len(reg["G3"]["artefact_sha256"]), 64)
 
-            # rôle interdit → rc 2, registre inchangé pour G6
+            # compte authentifié MAIS rôle interdit → rc 2, registre
+            # inchangé pour G6 (rôle lu dans l'annuaire, pas auto-déclaré)
             rc = cli.main(["sign", "--racine", str(racine), "--gate", "G6",
                            "--etat", str(ckpt),
-                           "--validateur", "u:x", "--role", "stagiaire",
+                           "--validateur", "u:stagiaire-9",
+                           *outillage.args_sign(racine, "u:stagiaire-9"),
                            "--decision", "VALIDATED",
                            "--motif", "tentative non habilitée",
                            "--pieces", "rapport_draft"])
@@ -305,8 +310,9 @@ class TestCLI(unittest.TestCase):
 
             rc = cli.main(["sign", "--racine", str(racine), "--gate", "G6",
                            "--etat", str(ckpt),
-                           "--validateur", "u:dir-1", "--role",
-                           "responsable_etude", "--decision", "VALIDATED",
+                           "--validateur", "u:dir-007",
+                           *outillage.args_sign(racine, "u:dir-007"),
+                           "--decision", "VALIDATED",
                            "--motif", "rapport relu, limites et risques OK",
                            "--pieces", "rapport_draft", "critique"])
             self.assertEqual(rc, 0)
@@ -328,9 +334,11 @@ class TestCLI(unittest.TestCase):
                     str(racine), str(racine / "decisions.json"),
                     backoff_base_s=0.0), donnees)
             ckpt = sorted((racine / "checkpoints").glob("ckpt_*.json"))[-1]
+            outillage.creer_comptes_demo(racine)
             rc = cli.main(["sign", "--racine", str(racine), "--gate", "G3",
                            "--etat", str(ckpt),
-                           "--validateur", "u:bio-1", "--role", "biostatisticien",
+                           "--validateur", "u:bio-042",
+                           *outillage.args_sign(racine, "u:bio-042"),
                            "--decision", "VALIDATED",
                            "--motif", "SAP relu, endpoint unique et verrou OK",
                            "--pieces", "sap", "dq_report"])
