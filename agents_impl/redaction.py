@@ -204,6 +204,40 @@ def fabriquer_redaction(ctx: Contexte):
                 f"p {_fmt_p(p['p_valeur'])}, FMI {_fmt(100*p['fraction_info_manquante'],1)} %, "
                 f"tipping δ={sens.get('delta_flip')} {_src(src_res)}")
         for aid, ana in res.items():
+            if ana.get("op_retenue") == "tipping_point_mnar_smd":
+                # A4 — ruban MNAR δ-ajusté sur SMD (SAP verrouillé)
+                r = ana["resultat"]
+                ent = ana.get("entrees", {})
+                if r.get("interpretable"):
+                    faits.append(
+                        f"- Sensibilité manquants `{aid}` (ruban MNAR "
+                        f"δ-ajusté sur SMD de Hedges, décalage contre "
+                        f"l'effet sur `{ana.get('groupe_mnar', r.get('groupe_ajuste'))}`, "
+                        f"m={r['m_imputations']} copies PMM, σ_ref="
+                        f"{_fmt(r['sigma_ref'])}, {len(r['grille_deltas'])} "
+                        f"points de grille) : {r['verdict']} {_src(src_res)}")
+                else:
+                    faits.append(
+                        f"- Sensibilité MNAR `{aid}` (ruban δ-ajusté SMD, "
+                        f"SAP verrouillé) : NON interprétable — "
+                        f"{r.get('motif')} {_src(src_res)}")
+                continue
+            if ana.get("op_retenue") == "tendance_fenetre_glissante":
+                r = ana["resultat"]
+                if r.get("interpretable"):
+                    faits.append(
+                        f"- Stabilité `{ana.get('var')}` — sensibilité "
+                        f"« passage au grand mail » (OLS local, fenêtre "
+                        f"{_fmt(r['fenetre_mois'],0)} mois, horizon "
+                        f"+{_fmt(r['horizon_mois'],0)} mois, seuil "
+                        f"{_fmt(r['spec_limite'],2)} sens {r['direction']}) : "
+                        f"{r['verdict']} {_src(src_res)}")
+                else:
+                    faits.append(
+                        f"- Stabilité `{ana.get('var')}` — sensibilité "
+                        f"« passage au grand mail » : NON interprétable — "
+                        f"{r.get('motif')} (fail-closed) {_src(src_res)}")
+                continue
             if ana.get("op_retenue") != "tendance_lineaire":
                 continue
             r = ana["resultat"]

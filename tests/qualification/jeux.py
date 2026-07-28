@@ -141,4 +141,52 @@ def jeux() -> dict:
                                arrondi=True),
         "cox_censure": _jeu_cox(SEED + 23, 260, 0.70, 0.5, 0.45,
                                 arrondi=True),
+        # --- sensibilité ------------------------------------------------------
+        # passage au grand mail : série pH-like décroissante 26 − 0,25·mois
+        # (bruit gaussien arrondi), seuil de spécification 24,5 « inferieur »
+        # — franchissement attendu sur la grille (délai mesurable).
+        "tendance_glissante": {
+            "mois": [0.0, 1.0, 3.0, 6.0, 9.0, 12.0, 18.0, 24.0],
+            "bruit": _gauss_jeu(SEED + 24, 8, 0.0, 0.08, arrondi=3),
+            "fenetre_mois": 12.0, "horizon_mois": 6.0,
+            "spec_limite": 24.5, "direction": "inferieur"},
+        # ruban MNAR δ-ajusté : deux groupes gaussiens (SMD ≈ 0,65), m = 6
+        # copies « complétées » simulées par jitter déterministe indépendant
+        # (les entrées du tipping point SONT des listes de copies alignées —
+        # la qualification numérique n'a pas besoin d'un PMM réel et jeux.py
+        # n'importe JAMAIS le catalogue).
+        "mnar_ruban": {
+            "g1": _gauss_jeu(SEED + 25, 30, 12.0, 5.0, arrondi=2),
+            "g2": _gauss_jeu(SEED + 26, 30, 9.0, 4.0, arrondi=2),
+            "m": 6, "jitter_sigma": 0.25,
+            "deltas": [0.0, 0.1, 0.25, 0.5, 0.75, 1.0],
+            "groupe_ajuste": "g2"},
     }
+
+
+def entrees_tendance_glissante() -> dict:
+    """Kwargs complets de `tendance_fenetre_glissante` — partagés entre le
+    générateur d'oracle et le test de qualification (mêmes floats, même
+    ordre d'évaluation ⇒ bit-à-bit identique)."""
+    j = jeux()["tendance_glissante"]
+    points = [{"mois": m, "valeur": 26.0 - 0.25 * m + b}
+              for m, b in zip(j["mois"], j["bruit"])]
+    return {"points": points, "fenetre_mois": j["fenetre_mois"],
+            "horizon_mois": j["horizon_mois"], "spec_limite": j["spec_limite"],
+            "direction": j["direction"]}
+
+
+def entrees_mnar_ruban() -> dict:
+    """Kwargs complets de `tipping_point_mnar_smd` — copies alignées
+    construites par jitter gaussien indépendant (graine par copie), sans
+    aucun import du catalogue."""
+    j = jeux()["mnar_ruban"]
+    cols1, cols2 = [], []
+    for k in range(j["m"]):
+        r1 = random.Random(SEED + 30 + 2 * k)
+        r2 = random.Random(SEED + 31 + 2 * k)
+        sigma = j["jitter_sigma"]
+        cols1.append([round(v + r1.gauss(0.0, sigma), 4) for v in j["g1"]])
+        cols2.append([round(v + r2.gauss(0.0, sigma), 4) for v in j["g2"]])
+    return {"colonnes_g1": cols1, "colonnes_g2": cols2,
+            "deltas": list(j["deltas"]), "groupe_ajuste": j["groupe_ajuste"]}

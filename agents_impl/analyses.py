@@ -251,6 +251,29 @@ def fabriquer_anomalies(ctx: Contexte):
 
 # ------------------------------------------------------------------ inférentiel
 
+def deduire_seuil_franchissement(moys: list[tuple[float, float]],
+                                 lo: float, hi: float) -> tuple[float, str]:
+    """Seuil et sens du franchissement d'une série de stabilité — DÉDUCTION
+    DÉTERMINISTE (jamais à vue) depuis les moyennes de réplicats par temps
+    `moys` triées [(mois, moyenne)] et les bornes d'acceptation [lo, hi] :
+
+    - trajectoire descendante (pente des extrémités < 0) ⇒ borne basse,
+      sens « inferieur » ; ascendante ⇒ borne haute, « superieur » ;
+    - trajectoire strictement plate ⇒ borne la plus PROCHE du niveau
+      final (premier franchissement plausible).
+    """
+    if len(moys) < 2:
+        raise ErreurLogique("≥ 2 points de temps exigés pour déduire le "
+                            "sens du franchissement")
+    pente = (moys[-1][1] - moys[0][1]) / (moys[-1][0] - moys[0][0])
+    if pente < 0:
+        return lo, "inferieur"
+    if pente > 0:
+        return hi, "superieur"
+    fin = moys[-1][1]
+    return (lo, "inferieur") if (fin - lo) <= (hi - fin) else (hi, "superieur")
+
+
 def fabriquer_inferentiel(ctx: Contexte):
     ctx.producteur = "agent.inferentiel"
 
@@ -262,6 +285,8 @@ def fabriquer_inferentiel(ctx: Contexte):
         ctrl = ControleurExecution(etat.seed)
         resultats: dict = {}
         ajustement_refuses: list[str] = []
+        sensibilite_refuses: list[str] = []
+        datasets = entrees.get("datasets_completes")   # copies PMM (ou None)
 
         def _deux_groupes(ana, lignes):
             g1, g2 = ana.get("contraste", ["produit", "controle"])
@@ -471,6 +496,103 @@ def fabriquer_inferentiel(ctx: Contexte):
                         "temps": [float(r[tv]) for r in lignes],
                         "evenements": ent_y, "x": ent_x})
                 entrees_op["n_lignes_completes"] = len(lignes)
+            elif op == "tipping_point_mnar_smd":
+                # A4 — sensibilité MNAR δ-ajustée sur SMD (pré-déclarée au
+                # SAP, G3) : copies PMM ALIGNÉES des 2 bras de la primaire.
+                # Sans imputation (taux ≤ seuil MI) ou primaire hors
+                # comparaison 2 groupes continus ⇒ sans objet : l'op rend
+                # non interprétable ET la contradiction est tracée —
+                # jamais de ruban de complaisance.
+                g1n, g2n = ana.get("contraste") or spec.get(
+                    "contraste", ["produit", "controle"])
+                gm = ana.get("groupe_mnar")
+                if gm == g1n:
+                    groupe_ajuste = "g1"
+                elif gm == g2n:
+                    groupe_ajuste = "g2"
+                else:
+                    raise ErreurLogique(
+                        f"{ana['id']} : groupe_mnar {gm!r} hors contraste "
+                        f"{(g1n, g2n)} — incohérence SAP (le verrou G3 "
+                        "n'aurait pas dû passer)")
+                a1 = next((a for a in sap["analyses"]
+                           if a.get("role") == "primaire"), None)
+                ops_mi = {"t_test_welch", "mann_whitney"}
+                applicable = (datasets is not None and a1 is not None
+                              and a1.get("op") in ops_mi
+                              and a1.get("var") == ana["var"])
+                cols1, cols2 = [], []
+                if datasets:
+                    for rows_k in datasets:
+                        cols1.append([float(r[ana["var"]]) for r in rows_k
+                                      if r.get(groupe) == g1n])
+                        cols2.append([float(r[ana["var"]]) for r in rows_k
+                                      if r.get(groupe) == g2n])
+                entrees_op = {
+                    "colonnes_g1": cols1, "colonnes_g2": cols2,
+                    "deltas": [float(d) for d in ana.get("deltas", [0.0])],
+                    "groupe_ajuste": groupe_ajuste}
+                if applicable:
+                    op_mnar = catalogue.OPS[op]
+                    res = ctrl.executer(op_mnar["fn"], op,
+                                        op_mnar["version"], **entrees_op)
+                else:
+                    res = {"interpretable": False,
+                           "test": "tipping_point_mnar_smd",
+                           "motif": ("sans objet : imputation multiple non "
+                                     "déclenchée (taux ≤ seuil) ou primaire "
+                                     "hors comparaison 2 groupes continus — "
+                                     "sensibilité MNAR documentée, aucune "
+                                     "mesure produite")}
+                if not res.get("interpretable"):
+                    sensibilite_refuses.append(
+                        f"{ana['id']} : sensibilité MNAR non interprétable "
+                        f"({res.get('motif')}) — robustesse MNAR non "
+                        "établie, à arbitrer en relecture (fail-closed)")
+                resultats[ana["id"]] = {
+                    "op_retenue": op, "version": catalogue.OPS[op]["version"],
+                    "role": ana["role"], "var": ana.get("var"),
+                    "groupe_mnar": gm,          # libellé humain (hors calcul)
+                    "resultat": res, "entrees": entrees_op}
+                continue
+            elif op == "tendance_fenetre_glissante":
+                # sensibilité « passage au grand mail » (stabilité) — seuil et
+                # sens DÉDUITS DE FAÇON DÉTERMINISTE de la spécification si non
+                # pré-déclarés dans l'item SAP : borne la plus menacée par la
+                # droite des moyennes de réplicats par temps (première
+                # franchie) ; jamais choisis à vue, cf. docs/SENSIBILITE.md
+                var_temps = ana.get("par_temps") or spec.get("var_temps", "mois")
+                pts = [{"mois": float(r[var_temps]),
+                        "valeur": float(r[ana["var"]])}
+                       for r in rows
+                       if r.get(var_temps) is not None
+                       and r.get(ana["var"]) is not None]
+                seuil, direction = ana.get("spec_limite"), ana.get("direction")
+                if seuil is None or direction not in ("inferieur", "superieur"):
+                    bornes_v = spec.get("bornes_acceptation", {}).get(ana["var"])
+                    if not bornes_v:
+                        raise ErreurLogique(
+                            f"{ana['id']} : sensibilité stabilité — pré-déclarer "
+                            "spec_limite + direction au SAP ou "
+                            "bornes_acceptation dans la spec (fail-closed)")
+                    lo, hi = float(bornes_v[0]), float(bornes_v[1])
+                    par_mois: dict = {}
+                    for p in pts:
+                        par_mois.setdefault(p["mois"], []).append(p["valeur"])
+                    moys = sorted((m, sum(v) / len(v))
+                                  for m, v in par_mois.items())
+                    try:
+                        seuil, direction = deduire_seuil_franchissement(
+                            moys, lo, hi)
+                    except ErreurLogique as e:
+                        raise ErreurLogique(f"{ana['id']} : {e}") from e
+                entrees_op = {"points": pts,
+                              "fenetre_mois": float(ana.get("fenetre_mois",
+                                                            12.0)),
+                              "horizon_mois": float(ana.get("horizon_mois",
+                                                            6.0)),
+                              "spec_limite": float(seuil),
+                              "direction": direction}
             elif op == "proportion_exacte":
                 seuil = spec.get("seuil_grade_reaction", 2)
                 var, par = ana["var"], ana.get("par", groupe)
@@ -508,8 +630,9 @@ def fabriquer_inferentiel(ctx: Contexte):
                 "resultat": res, "entrees": entrees_op}
 
         # — sensibilité MI poolée + tipping point MNAR (données imputées aval) —
+        # (`datasets` hissé avant la boucle — ruban SMD A4 réutilise les
+        # mêmes copies PMM alignées)
         sensibilites: dict = {}
-        datasets = entrees.get("datasets_completes")
         a1 = next((a for a in sap["analyses"] if a.get("role") == "primaire"), None)
         OPS_SENSIBILITE_MI = {"t_test_welch", "mann_whitney"}
         if (datasets and a1 and a1["var"] == spec["endpoint_principal"]
@@ -571,9 +694,24 @@ def fabriquer_inferentiel(ctx: Contexte):
                for a in resultats.values()):
             assumptions.append("ajustement multivarié A3 exécuté exactement "
                                "comme verrouillé au SAP (cas complets)")
+        if any(a.get("op_retenue") == "tendance_fenetre_glissante"
+               for a in resultats.values()):
+            assumptions.append(
+                "sensibilité stabilité « passage au grand mail » : seuil et "
+                "sens du franchissement déduits de façon DÉTERMINISTE de "
+                "bornes_acceptation (borne la plus menacée par la droite des "
+                "moyennes de réplicats) quand non pré-déclarés au SAP — "
+                "jamais choisis à vue")
+        if any(a.get("op_retenue") == "tipping_point_mnar_smd"
+               for a in resultats.values()):
+            assumptions.append(
+                "sensibilité MNAR (ruban δ-ajusté SMD) exécutée exactement "
+                "comme verrouillée au SAP : grille δ et groupe pénalisé "
+                "pré-déclarés ; renversement d'effet marqué "
+                "(delta_renversement) s'il survient")
         return sortie(confidence=0.92, artefacts=[art],
                       assumptions=assumptions,
-                      contradictions=ajustement_refuses,
+                      contradictions=ajustement_refuses + sensibilite_refuses,
                       resultats=resultats, sensibilites=sensibilites,
                       results_ref=art.ref)
     return agent

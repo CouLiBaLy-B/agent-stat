@@ -30,6 +30,16 @@ DESIGNATIONS_OPS = {
     "or_apparie": "OR apparié 1:1 (McNemar des discordants) — ASSOCIATION",
     "risque_relatif_cohorte": "RR cohorte (Katz) + RD (Newcombe) — ASSOCIATION",
     "km_logrank_hr": "Kaplan-Meier + log-rang + HR (Peto) — ASSOCIATION",
+    "regression_logistique": ("OR ajustés multivariés (A3 pré-déclarée) — "
+                              "ASSOCIATION ajustée"),
+    "cox_ph": ("HR ajustés multivariés Cox/Breslow (A3 pré-déclarée) — "
+               "ASSOCIATION ajustée"),
+    "tendance_fenetre_glissante": ("sensibilité stabilité : premier mois où la "
+                                   "pire borne IC95 d'un OLS local franchit "
+                                   "le seuil — rôle 'sensibilite'"),
+    "tipping_point_mnar_smd": ("sensibilité manquants : ruban MNAR δ-ajusté "
+                               "sur SMD + point de bascule (rôle "
+                               "'sensibilite')"),
 }
 
 REGLES_COMMUNES = (
@@ -67,6 +77,10 @@ def systeme_biostat() -> str:
         "paramétrique (t_test_welch) doit déclarer un fallback (si: "
         "'non_normal') ; chaque endpoint cite une variable existante ; déclare "
         "la gestion de la multiplicité et la stratégie de données manquantes. "
+        "Rôle 'sensibilite' : analyses de robustesse PRÉ-DÉCLARÉES (stabilité "
+        "= tendance_fenetre_glissante avec fenetre_mois/horizon_mois bornés ; "
+        "manquants = tipping_point_mnar_smd) — elles s'ajoutent au plan sans "
+        "jamais remplacer la primaire. "
         + REGLES_COMMUNES)
 
 

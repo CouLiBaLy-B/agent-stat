@@ -308,8 +308,125 @@ def _cox_oracle(temps: list, evenements: list, x: dict) -> dict:
             "p_valeur_modele": _x(stats.chi2.sf(score, p))}
 
 
+def _rubin_np(est: list[dict]) -> dict:
+    """Ré-implémentation indépendante du pooling de Rubin / t de Barnard-Rubin
+    (numpy) — partagée par les oracles `pooling_rubin` et
+    `tipping_point_mnar_smd` (mêmes formules, mêmes primitives scipy)."""
+    m = len(est)
+    thetas = [e["theta"] for e in est]
+    ubar = float(np.mean([e["se"] ** 2 for e in est]))
+    qbar = float(np.mean(thetas))
+    b = float(np.var(thetas, ddof=1))
+    tvar = ubar + (1 + 1 / m) * b
+    r_r = (1 + 1 / m) * b / ubar
+    lam = (1 + 1 / m) * b / tvar
+    ddl = (m - 1) / (lam * lam)
+    se = math.sqrt(tvar)
+    fmi = (r_r + 2 / (ddl + 3)) / (1 + r_r)
+    return {"theta_pooled": qbar, "se_pooled": se, "variance_intra": ubar,
+            "variance_inter": b, "augmentation_relative": r_r, "ddl": ddl,
+            "fraction_info_manquante": fmi,
+            "p_valeur": _x(2 * stats.t.sf(abs(qbar / se), ddl)),
+            "tc95": _x(stats.t.ppf(1 - ALPHA / 2, ddl))}
+
+
+def _hedges_np(g1: list, g2: list) -> tuple[float, float]:
+    """SMD « catalogue » (sp = sqrt((v1+v2)/2)) + variance asymptotique —
+    contre-implémentation numpy indépendante des formules gelées dans
+    `stats_catalogue/imputation.py`."""
+    a1 = np.asarray(g1, dtype=float)
+    a2 = np.asarray(g2, dtype=float)
+    n1, n2 = len(a1), len(a2)
+    v1, v2 = float(a1.var(ddof=1)), float(a2.var(ddof=1))
+    sp = math.sqrt((v1 + v2) / 2.0)
+    smd = float(a1.mean() - a2.mean()) / sp if sp > 0 else 0.0
+    df = n1 + n2 - 2
+    var = (n1 + n2) / (n1 * n2) + smd * smd / (2 * df)
+    return smd, var
+
+
+def _fenetres_oracle(e: dict) -> dict:
+    """Contre-implémentation INDÉPENDANTE du passage au grand mail : OLS
+    local par fenêtre via scipy.stats.linregress, IC95 de prévision par
+    primitives numpy/Student — aucune boucle partagée avec le catalogue."""
+    pts = sorted(((float(p["mois"]), float(p["valeur"])) for p in e["points"]),
+                 key=lambda z: z[0])
+    fenetres = []
+    for t0 in sorted({m for m, _ in pts}):
+        local = [(m, v) for m, v in pts if t0 <= m <= t0 + e["fenetre_mois"]]
+        if len(local) < 4 or len({m for m, _ in local}) < 2:
+            continue
+        t_arr = np.asarray([m for m, _ in local], dtype=float)
+        v_arr = np.asarray([v for _, v in local], dtype=float)
+        reg = stats.linregress(t_arr, v_arr)
+        nn = len(local)
+        mx = float(t_arr.mean())
+        sxx = float(np.sum((t_arr - mx) ** 2))
+        residus = v_arr - (reg.intercept + reg.slope * t_arr)
+        sd_r = float(np.sqrt(np.sum(residus ** 2) / (nn - 2)))
+        t_pred = t0 + e["fenetre_mois"] + e["horizon_mois"]
+        pred = float(reg.intercept + reg.slope * t_pred)
+        tc = float(stats.t.ppf(1 - ALPHA / 2, nn - 2))
+        se_pr = sd_r * math.sqrt(1 / nn + (t_pred - mx) ** 2 / sxx)
+        ic_lo, ic_hi = pred - tc * se_pr, pred + tc * se_pr
+        borne = ic_lo if e["direction"] == "inferieur" else ic_hi
+        franchit = bool(borne <= e["spec_limite"]
+                        if e["direction"] == "inferieur"
+                        else borne >= e["spec_limite"])
+        fenetres.append({"t0": t0, "pente": _x(reg.slope), "prevision": pred,
+                         "borne_pessime": borne,
+                         "demi_ic": (ic_hi - ic_lo) / 2.0,
+                         "franchit": franchit,
+                         "mois_franchissement_prevu":
+                             t0 + e["fenetre_mois"] + e["horizon_mois"]})
+    franchies = [f for f in fenetres if f["franchit"]]
+    premiere = franchies[0] if franchies else None
+    return {"fenetres": fenetres, "n_fenetres": len(fenetres),
+            "premier_t0_franchissement": premiere["t0"] if premiere else None,
+            "premier_mois_franchissement_prevu": (
+                premiere["mois_franchissement_prevu"] if premiere else None)}
+
+
+def _mnar_oracle(e: dict) -> dict:
+    """Contre-implémentation INDÉPENDANTE du ruban MNAR δ-ajusté : σ_ref
+    poolé numpy sur toutes les copies, SMD `_hedges_np` recalculé par cycle,
+    re-pooling `_rubin_np` — mêmes formules publiées, zéro code partagé."""
+    cols1, cols2 = e["colonnes_g1"], e["colonnes_g2"]
+    m = len(cols1)
+    plat1 = np.asarray([v for c in cols1 for v in c], dtype=float)
+    plat2 = np.asarray([v for c in cols2 for v in c], dtype=float)
+    n1, n2 = len(cols1[0]), len(cols2[0])
+    sp_ref = (((m * n1 - 1) * float(plat1.var(ddof=1))
+               + (m * n2 - 1) * float(plat2.var(ddof=1)))
+              / (m * n1 + m * n2 - 2)) ** 0.5
+    smd0, _ = _hedges_np(cols1[0], cols2[0])
+    sens = -1.0 if smd0 >= 0 else 1.0
+    ruban = []
+    for d in sorted(float(x) for x in e["deltas"]):
+        decal = sens * d * sp_ref
+        est = []
+        for c1, c2 in zip(cols1, cols2):
+            if e["groupe_ajuste"] == "g1":
+                smd_k, var_k = _hedges_np([v + decal for v in c1], c2)
+            else:
+                smd_k, var_k = _hedges_np(c1, [v - decal for v in c2])
+            est.append({"theta": smd_k, "se": math.sqrt(var_k)})
+        pool = _rubin_np(est)
+        ruban.append({"delta": d, "decalage_unite": abs(decal),
+                      "theta_pooled": pool["theta_pooled"],
+                      "se_pooled": pool["se_pooled"],
+                      "p_valeur": pool["p_valeur"], "ddl": pool["ddl"]})
+    tipping = next((rb for rb in ruban if rb["p_valeur"] >= ALPHA), None)
+    return {"sigma_ref": sp_ref, "ruban": ruban,
+            "delta_bascule": tipping["delta"] if tipping else None,
+            "decalage_bascule_unite": (tipping["decalage_unite"]
+                                       if tipping else None)}
+
+
 def réf_ops() -> dict:
     """Valeurs de référence des opérations du catalogue (oracles scipy)."""
+    from tests.qualification.jeux import (entrees_mnar_ruban,
+                                          entrees_tendance_glissante)
     r: dict = {}
     z95 = float(stats.norm.ppf(1 - ALPHA / 2))
 
@@ -434,24 +551,7 @@ def réf_ops() -> dict:
             k["t1"], k["e1"], k["t2"], k["e2"])
 
     # --- pooling Rubin ------------------------------------------------------------------------
-    est = J["rubin"]
-    m = len(est)
-    thetas = [e["theta"] for e in est]
-    ubar = float(np.mean([e["se"] ** 2 for e in est]))
-    qbar = float(np.mean(thetas))
-    b = float(np.var(thetas, ddof=1))
-    tvar = ubar + (1 + 1 / m) * b
-    r_r = (1 + 1 / m) * b / ubar
-    lam = (1 + 1 / m) * b / tvar
-    ddl = (m - 1) / (lam * lam)
-    se = math.sqrt(tvar)
-    fmi = (r_r + 2 / (ddl + 3)) / (1 + r_r)
-    r["pooling_rubin"] = {
-        "theta_pooled": qbar, "se_pooled": se, "variance_intra": ubar,
-        "variance_inter": b, "augmentation_relative": r_r, "ddl": ddl,
-        "fraction_info_manquante": fmi,
-        "p_valeur": _x(2 * stats.t.sf(abs(qbar / se), ddl)),
-        "tc95": _x(stats.t.ppf(1 - ALPHA / 2, ddl))}
+    r["pooling_rubin"] = _rubin_np(J["rubin"])
 
     # --- descriptif / smd / normalité --------------------------------------------------------
     xs = J["descriptif"]
@@ -481,6 +581,11 @@ def réf_ops() -> dict:
     for nom in ("cox_simple", "cox_censure"):
         k = J[nom]
         r[f"cox_ph:{nom}"] = _cox_oracle(k["temps"], k["evenements"], k["x"])
+
+    # --- sensibilité (oracles indépendants numpy/linregress) -------------------
+    r["tendance_fenetre_glissante:tendance_glissante"] = _fenetres_oracle(
+        entrees_tendance_glissante())
+    r["tipping_point_mnar_smd:mnar_ruban"] = _mnar_oracle(entrees_mnar_ruban())
     return r
 
 

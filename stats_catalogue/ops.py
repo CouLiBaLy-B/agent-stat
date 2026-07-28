@@ -1034,9 +1034,13 @@ OPS: dict[str, dict] = {
     "cox_ph":                {"fn": cox_ph,                "version": "1.0.0"},
     "tendance_fenetre_glissante": {"fn": tendance_fenetre_glissante,
                                    "version": "1.0.0"},
+    # 1.1.0 : ajout ADDITIF du marquage de renversement de l'effet
+    # (`renverse` par δ, `delta_renversement`, verdict explicitant l'artefact
+    # de « re-significativité » au-delà de la traversée de zéro) — calculs
+    # θ/se/p/ddl et bascule INVARIANTS (qualifiés, cf. docs/QUALIFICATION)
     "tipping_point_mnar_smd": {"fn": lambda *a, **kw: __import__(
         "stats_catalogue.imputation", fromlist=["tipping_point_mnar_smd"]
-    ).tipping_point_mnar_smd(*a, **kw), "version": "1.0.0"},
+    ).tipping_point_mnar_smd(*a, **kw), "version": "1.1.0"},
 }
 
 

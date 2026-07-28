@@ -37,7 +37,7 @@ def _gabarit_usage_cosmetique(spec: dict, dq: dict) -> list[dict]:
               "par": groupe, "contraste": contraste,
               "hypotheses": ["normalite_par_groupe"],
               "fallback": {"si": "non_normal", "op": "mann_whitney"}}
-    return [
+    analyses = [
         {"id": "A0a", "role": "descriptif", "op": "descriptif_continu",
          "var": ep, "par": groupe},
         a1,
@@ -46,6 +46,10 @@ def _gabarit_usage_cosmetique(spec: dict, dq: dict) -> list[dict]:
          "definition": f">= {spec.get('seuil_grade_reaction', 2)}",
          "par": groupe},
     ]
+    a4 = _bloc_sensibilite_mnar(spec)
+    if a4:
+        analyses.append(a4)
+    return analyses
 
 
 def _gabarit_observationnel(spec: dict, dq: dict) -> list[dict]:
@@ -104,6 +108,61 @@ def _bloc_ajustement(spec: dict, mode: str) -> dict | None:
     return {**base, "op": "regression_logistique", "var_issue": ev,
             "note": ("OR ajusté sur incidence (SAP verrouillé) — association "
                      "ajustée ; confusion non mesurée possible")}
+
+
+# grille MNAR : plafond métier 5 σ — au-delà, l'hypothèse est caricaturale
+# (biais systématique ≥ 5 écarts-types sur les imputés) et le ruban traverse
+# largement zéro ; le domaine d'interprétabilité usuel est ≤ 2 σ (E9(R1))
+DELTA_MNAR_MAX = 5.0
+
+
+def _bloc_sensibilite_mnar(spec: dict) -> dict | None:
+    """Analyse « sensibilite » ruban MNAR δ-ajusté sur SMD si pré-déclarée
+    (`spec["sensibilite_mnar_smd"] = {"deltas": [...], "groupe": "produit"}`).
+
+    Cadrage fail-closed :
+    - grille δ en σ-unités : non vide, ≤ 16 points, floats ≥ 0, ≤ 5 σ,
+      contient 0.0 (point de base) — triée de façon déterministe ;
+    - `groupe` = bras pénalisé (typiquement celui qui porte les manquants),
+      DOIT appartenir au contraste de la primaire ;
+    - exécutable uniquement si l'endpoint principal est continu et comparé
+      entre 2 bras avec imputation multiple (le runtime rend non
+      interprétable + contradiction « sans objet MI » sinon — jamais de
+      résultat de complaisance).
+    """
+    bloc = spec.get("sensibilite_mnar_smd")
+    if not bloc:
+        return None
+    deltas = bloc.get("deltas")
+    groupe_mnar = bloc.get("groupe")
+    if not deltas or not all(isinstance(d, (int, float))
+                             and not isinstance(d, bool) for d in deltas):
+        raise ErreurLogique("sensibilite_mnar_smd : 'deltas' non vide exigé "
+                            "(floats en σ-unités, 0.0 inclus)")
+    if len(deltas) > 16:
+        raise ErreurLogique("sensibilite_mnar_smd : grille δ ≤ 16 points "
+                            "(budget de calcul verrouillé)")
+    if any(float(d) < 0 or float(d) > DELTA_MNAR_MAX for d in deltas):
+        raise ErreurLogique(f"sensibilite_mnar_smd : δ ∈ [0, {DELTA_MNAR_MAX:g}] "
+                            "σ exigé (domaine d'interprétabilité déclaré)")
+    if 0.0 not in {float(d) for d in deltas}:
+        raise ErreurLogique("sensibilite_mnar_smd : la grille doit contenir "
+                            "0.0 (base poolée de référence)")
+    contraste = spec.get("contraste", ["produit", "controle"])
+    if groupe_mnar not in contraste:
+        raise ErreurLogique(f"sensibilite_mnar_smd : groupe pénalisé "
+                            f"{groupe_mnar!r} hors contraste {contraste!r}")
+    return {"id": "A4", "role": "sensibilite", "op": "tipping_point_mnar_smd",
+            "var": spec["endpoint_principal"],
+            "par": spec.get("variable_groupe", "groupe"),
+            "contraste": list(contraste),
+            "deltas": sorted(float(d) for d in deltas),
+            "groupe_mnar": groupe_mnar,
+            "note": ("ruban MNAR δ-ajusté contre l'effet observé (SMD de "
+                     "Hedges, re-pool Rubin par cycle PMM) — bascule = "
+                     "premier δ de perte de significativité dans le sens "
+                     "observé ; hypothèse conservatrice pré-déclarée, "
+                     "cf. docs/SENSIBILITE.md")}
 
 
 def _gabarit_cas_temoins(spec: dict, dq: dict) -> list[dict]:
@@ -179,10 +238,34 @@ def _gabarit_stabilite(spec: dict, dq: dict) -> list[dict]:
         raise ErreurLogique("stabilité : 'bornes_acceptation' et 'var_temps' "
                             "requis dans la spec")
     ep = spec["endpoint_principal"]
-    return [{"id": f"ST-{var}", "role": "primaire" if var == ep else "secondaire",
-             "op": "tendance_lineaire", "var": var,
-             "par_temps": spec["var_temps"],
-             "bornes": bornes[var]} for var in bornes]
+    analyses = [{"id": f"ST-{var}",
+                 "role": "primaire" if var == ep else "secondaire",
+                 "op": "tendance_lineaire", "var": var,
+                 "par_temps": spec["var_temps"],
+                 "bornes": bornes[var]} for var in bornes]
+    # sensibilité « passage au grand mail » PRÉ-DÉCLARÉE sur l'endpoint
+    # principal (ICH Q1E — extrapolation bornée) ; fenêtre/horizon venant de
+    # spec["sensibilite_stabilite"] si fournie, sinon défauts verrouillés 12/6 ;
+    # seuil et sens du franchissement NON fixés ici : déduits de façon
+    # DÉTERMINISTE à l'exécution depuis bornes_acceptation (borne la plus
+    # menacée) — jamais choisis à vue, tracé dans les assumptions.
+    sens = spec.get("sensibilite_stabilite") or {}
+    fenetre = float(sens.get("fenetre_mois", 12.0))
+    horizon = float(sens.get("horizon_mois", 6.0))
+    if fenetre <= 0 or not 0 < horizon <= 12:
+        raise ErreurLogique(
+            "sensibilite_stabilite : fenetre_mois > 0 et 0 < horizon_mois "
+            "≤ 12 exigés (extrapolation bornée, ICH Q1E) — SAP non émis")
+    analyses.append({"id": f"ST-SENS-{ep}", "role": "sensibilite",
+                     "op": "tendance_fenetre_glissante", "var": ep,
+                     "par_temps": spec["var_temps"],
+                     "fenetre_mois": fenetre,
+                     "horizon_mois": horizon,
+                     "note": ("premier mois où la pire borne IC95 de l'OLS "
+                              "local franchit la spécification — délai "
+                              "mesurable de robustesse, extrapolation "
+                              "bornée (≤ 12 mois), non mécaniste")})
+    return analyses
 
 
 GABARITS = {
@@ -232,6 +315,49 @@ def _verifier_regles_metier(analyses: list[dict], spec: dict) -> None:
             raise ErreurLogique(
                 "l'ajustement proposé dévie de la déclaration de la spec "
                 "(covariables/epv_min) — repli gabarit, jamais de dérive")
+    # sensibilités PRÉ-DÉCLARÉES : la proposition ne doit ni les omettre ni
+    # en dévier — et JAMAIS en proposer de non déclarées (dérive post-hoc)
+    sens_sap = [a for a in analyses if a.get("role") == "sensibilite"]
+    ops_sens_sap = {a.get("op") for a in sens_sap}
+    bloc_stab = spec.get("sensibilite_stabilite") or {}
+    if spec.get("bornes_acceptation") and spec.get("var_temps"):
+        # type stabilité : le gabarit impose l'item « passage au grand mail »
+        if "tendance_fenetre_glissante" not in ops_sens_sap:
+            raise ErreurLogique("sensibilité stabilité (passage au grand "
+                                "mail) omise par la proposition — repli "
+                                "gabarit")
+        att = {"fenetre_mois": float(bloc_stab.get("fenetre_mois", 12.0)),
+               "horizon_mois": float(bloc_stab.get("horizon_mois", 6.0))}
+        a_sens = next(a for a in sens_sap
+                      if a.get("op") == "tendance_fenetre_glissante")
+        if (float(a_sens.get("fenetre_mois", 0)) != att["fenetre_mois"]
+                or float(a_sens.get("horizon_mois", 0)) != att["horizon_mois"]):
+            raise ErreurLogique("la sensibilité stabilité proposée dévie de "
+                                "la déclaration (fenetre/horizon) — repli "
+                                "gabarit, jamais de dérive")
+    elif "tendance_fenetre_glissante" in ops_sens_sap:
+        raise ErreurLogique("tendance_fenetre_glissante proposée hors cadre "
+                            "stabilité pré-déclaré — rejet")
+    bloc_mnar = spec.get("sensibilite_mnar_smd")
+    if bloc_mnar:
+        if "tipping_point_mnar_smd" not in ops_sens_sap:
+            raise ErreurLogique("sensibilité MNAR (ruban δ-ajusté SMD) "
+                                "pré-déclarée dans la spec : la proposition "
+                                "NE DOIT PAS l'omettre (repli gabarit)")
+        attendu = _bloc_sensibilite_mnar(spec)
+        a_mnar = next(a for a in sens_sap
+                      if a.get("op") == "tipping_point_mnar_smd")
+        if (sorted(float(d) for d in a_mnar.get("deltas", []))
+                != attendu["deltas"]
+                or a_mnar.get("groupe_mnar") != attendu["groupe_mnar"]):
+            raise ErreurLogique("la sensibilité MNAR proposée dévie de la "
+                                "déclaration (grille δ / groupe pénalisé) — "
+                                "repli gabarit")
+    elif "tipping_point_mnar_smd" in ops_sens_sap:
+        raise ErreurLogique("tipping_point_mnar_smd proposée sans "
+                            "sensibilite_mnar_smd déclarée dans la spec — "
+                            "rejet (jamais de sensibilité post-hoc)")
+
     variables = set(spec.get("variables", {}))
     for a in analyses:
         if a["op"] not in OPS:
@@ -243,6 +369,22 @@ def _verifier_regles_metier(analyses: list[dict], spec: dict) -> None:
                                 "pré-spécifié")
         if a.get("fallback") and a["fallback"]["op"] not in OPS:
             raise ErreurLogique(f"{a['id']} : fallback hors catalogue")
+        # cohérence rôle/op pour les sensibilités (pas de sensibilité
+        # déguisée en analyse confirmatoire ni inversement)
+        ops_sens = {"tendance_fenetre_glissante", "tipping_point_mnar_smd"}
+        if a.get("role") == "sensibilite" and a["op"] not in ops_sens:
+            raise ErreurLogique(f"{a['id']} : role 'sensibilite' incompatible "
+                                f"avec l'op {a['op']!r}")
+        if a["op"] in ops_sens and a.get("role") != "sensibilite":
+            raise ErreurLogique(f"{a['id']} : {a['op']} est une sensibilité "
+                                "— role 'sensibilite' exigé (jamais "
+                                "confirmatoire)")
+        if a["op"] == "tipping_point_mnar_smd":
+            cont = a.get("contraste") or spec.get(
+                "contraste", ["produit", "controle"])
+            if a.get("groupe_mnar") not in cont:
+                raise ErreurLogique(f"{a['id']} : groupe_mnar "
+                                    f"{a.get('groupe_mnar')!r} hors contraste")
         for cle in CLES_METIER_ASSOCIATION.get(a["op"], []):
             if cle == "covariables":
                 continue                       # contrôlées ci-dessous
@@ -265,6 +407,26 @@ def _verifier_regles_metier(analyses: list[dict], spec: dict) -> None:
             if a.get("var_exposition") in covs:
                 raise ErreurLogique(f"{a['id']} : l'exposition est imposée en "
                                     "1re position — ne pas la redoubler")
+        if a["op"] == "tendance_fenetre_glissante":
+            # sensibilité stabilité pré-déclarée : paramètres bornés ICI
+            # (l'op refuse aussi en aval — fail-closed double verrou)
+            fenetre, horizon = (a.get("fenetre_mois"), a.get("horizon_mois"))
+            if fenetre is None or not float(fenetre) > 0:
+                raise ErreurLogique(f"{a['id']} : fenetre_mois > 0 exigé "
+                                    "(sensibilité fenêtre glissante)")
+            if horizon is None or not 0 < float(horizon) <= 12:
+                raise ErreurLogique(f"{a['id']} : 0 < horizon_mois ≤ 12 exigé "
+                                    "(extrapolation bornée, ICH Q1E)")
+            var_temps = a.get("par_temps") or spec.get("var_temps")
+            if not var_temps:
+                raise ErreurLogique(f"{a['id']} : 'par_temps' (ou spec "
+                                    "'var_temps') exigé")
+            if ((a.get("spec_limite") is None)
+                    != (a.get("direction") not in ("inferieur", "superieur"))):
+                raise ErreurLogique(
+                    f"{a['id']} : spec_limite et direction se déclarent "
+                    "ENSEMBLE au SAP — ou s'omettent ensemble (déduction "
+                    "déterministe depuis bornes_acceptation à l'exécution)")
 
 
 def _defauts(analyses: list[dict], spec: dict) -> list[dict]:

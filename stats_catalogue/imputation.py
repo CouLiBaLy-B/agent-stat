@@ -110,10 +110,19 @@ def tipping_point_mnar_smd(colonnes_g1: list[list[float]],
       est appliqué **contre l'effet observé** (−signe(θ_base)·δ·σ_réf), de
       sorte que δ positif ATTÉNUE toujours le SMD poolé — δ est exprimé en
       unités de σ_réf, écart-type poolé calculé sur TOUTES les copies ;
-    - chaque δ re-pool par `pooling_rubin` ; significativité = p < alpha
-      (t de Barnard-Rubin, comme l'inférence de base) ;
-    - sortie : base (δ=0), ruban par δ, premier δ de bascule (unique si
-      θ(δ) monotone), transcription en échelle de la variable (δ×σ_réf).
+    - chaque δ re-pool par `pooling_rubin` ; le champ `significatif` est
+      p < alpha (t de Barnard-Rubin, comme l'inférence de base) — mesure
+      BRUTE toutes directions confondues ; au-delà du point où θ traverse
+      zéro, l'effet est RENVERSÉ par la pénalisation (`renverse: true` et
+      `delta_renversement`) : une éventuelle « re-significativité » y est
+      l'artefact du renversement, pas une résurrection de l'effet observé ;
+    - la bascule retenue (`delta_bascule`) est le PREMIER δ où la
+      significativité est perdue — dans le sens observé ; `theta_monotone`
+      n'est vrai que si la grille ne traverse pas zéro (|θ| est en V sous
+      une pénalisation affine) : un `theta_monotone = false` signale la
+      traversée, la bascule reste unique par construction ;
+    - sortie : base (δ=0), ruban par δ, premier δ de bascule, transcription
+      en échelle de la variable (δ×σ_réf).
     """
     from stats_catalogue.ops import pooling_rubin
     if groupe_ajuste not in ("g1", "g2"):
@@ -143,7 +152,8 @@ def tipping_point_mnar_smd(colonnes_g1: list[list[float]],
 
     # orientation : δ ≥ 0 atténue |θ| quel que soit le signe de θ_base
     smd0, var0 = _hedges_smd_var(list(colonnes_g1[0]), list(colonnes_g2[0]))
-    sens = -1.0 if smd0 >= 0 else 1.0
+    signe_base = 1.0 if smd0 >= 0 else -1.0
+    sens = -signe_base
 
     ruban = []
     for d in grille:
@@ -162,13 +172,29 @@ def tipping_point_mnar_smd(colonnes_g1: list[list[float]],
                       "theta_pooled": pool["theta_pooled"],
                       "se_pooled": pool["se_pooled"],
                       "p_valeur": pool["p_valeur"], "ddl": pool["ddl"],
-                      "significatif": pool["p_valeur"] < alpha})
+                      "significatif": pool["p_valeur"] < alpha,
+                      "renverse": pool["theta_pooled"] * signe_base < 0})
     base = ruban[grille.index(0.0)] if 0.0 in grille else None
     tipping = next((r for r in ruban if not r["significatif"]), None)
+    renverses = [r for r in ruban if r["renverse"]]
+    delta_renversement = renverses[0]["delta"] if renverses else None
     thetas = [abs(r["theta_pooled"]) for r in ruban]
     diffs = [thetas[i + 1] - thetas[i] for i in range(len(thetas) - 1)]
-    # |θ(δ)| monotone décroissant : garantit l'unicité du point de bascule
+    # |θ(δ)| monotone décroissant : vrai tant que la grille ne traverse pas
+    # zéro (|θ| est en V sous pénalisation affine — cf. docstring)
     monotone = all(d <= 1e-12 for d in diffs) if diffs else True
+    if tipping:
+        verdict = (f"résultat FRAGILE au-delà de δ={tipping['delta']:g} σ "
+                   f"(décalage {tipping['decalage_unite']:g} unités)")
+        if delta_renversement is not None:
+            verdict += (f" ; l'effet est RENVERSÉ par la pénalisation dès "
+                        f"δ={delta_renversement:g} σ — toute "
+                        "« re-significativité » au-delà est l'artefact du "
+                        "renversement, pas une résurrection de l'effet "
+                        "observé")
+    else:
+        verdict = ("résultat ROBUSTE : aucune bascule sur la grille δ "
+                   "balayée")
     return {"interpretable": True, "test": "tipping_point_mnar_smd",
             "m_imputations": m, "n1": n1, "n2": n2, "sigma_ref": sp_ref,
             "groupe_ajuste": groupe_ajuste, "grille_deltas": grille,
@@ -177,12 +203,9 @@ def tipping_point_mnar_smd(colonnes_g1: list[list[float]],
             "decalage_bascule_unite": (tipping["decalage_unite"]
                                        if tipping else None),
             "theta_au_bascule": tipping["theta_pooled"] if tipping else None,
+            "delta_renversement": delta_renversement,
             "theta_monotone": monotone,
-            "verdict": ("résultat FRAGILE au-delà de δ="
-                        f"{tipping['delta']:g} σ (décalage "
-                        f"{tipping['decalage_unite']:g} unités)" if tipping
-                        else "résultat ROBUSTE : aucune bascule sur la "
-                             "grille δ balayée"),
+            "verdict": verdict,
             "hypothese": ("scénario MNAR δ-ajusté contre l'effet observé sur "
                           f"les imputés de {groupe_ajuste} — sensibilité "
                           "PRÉ-DÉCLARÉE au SAP (grille, α) ; n'infirme ni ne "

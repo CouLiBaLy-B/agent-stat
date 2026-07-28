@@ -1,7 +1,11 @@
 # Analyses de sensibilité déclaratives & verrou toctou des sorties
 
-**Version :** 1.0.0 · étend `stats_catalogue/ops.py`, `stats_catalogue/imputation.py`
-et `stats_catalogue/controller.py` — 100 % stdlib, 100 % déterministe.
+**Version :** 1.1.0 · `tipping_point_mnar_smd` 1.1.0 (marquage de
+renversement — additif, calculs invariants) · câblage pipeline des deux ops
+dans les gabarits SAP + schéma LLM + relecture · étend
+`stats_catalogue/ops.py`, `stats_catalogue/imputation.py`,
+`stats_catalogue/controller.py`, `agents_impl/`, `llm/schemas.py` —
+100 % stdlib, 100 % déterministe.
 
 Deux exigences croisées :
 
@@ -63,12 +67,28 @@ systématique faudrait-il pour renverser la conclusion ?
 3. re-pooling par `pooling_rubin` (t de Barnard-Rubin) ; significativité =
    `p < alpha`.
 
-Sortie : `base` (δ = 0), `ruban[]` par δ (θ, se, p, ddl, significativité,
-décalage transcrit en unités de la variable), `delta_bascule` (premier δ où
-la significativité se perd), `theta_monotone` (|θ(δ)| monotone décroissant
-⇒ bascule **unique**), `verdict` (« FRAGILE au-delà de δ=… » / « ROBUSTE :
-aucune bascule sur la grille »), `hypothese` (scénario conservateur à
-pré-déclarer ; n'infirme ni ne confirme MAR).
+Sortie : `base` (δ = 0), `ruban[]` par δ (θ, se, p, ddl, `significatif`,
+décalage transcrit en unités de la variable, **`renverse`**), `delta_bascule`
+(premier δ où la significativité se perd **dans le sens observé**),
+`theta_monotone`, `delta_renversement`, `verdict`, `hypothese` (scénario
+conservateur à pré-déclarer ; n'infirme ni ne confirme MAR).
+
+**Renversement d'effet (1.1.0).** La pénalisation δ·σ_ref étant affine,
+θ(δ) est quasi linéaire décroissante : |θ| dessine un **V**. Au-delà du
+point où θ traverse zéro, l'effet est **renversé** par la pénalisation —
+et la p-value brute (toutes directions) peut redevenir « significative ».
+L'op marque explicitement cette zone (depuis la 1.1.0) :
+
+- `renverse: true` sur chaque δ où θ a changé de signe par rapport à la
+  base ; `delta_renversement` = premier δ renversé ;
+- la **bascule** reste le *premier* δ de perte de significativité dans le
+  sens observé — unique par construction (le `significatif` nu est une
+  mesure brute toutes directions, le champ `renverse` rétablit la lecture) ;
+- `theta_monotone = false` signale que la grille a traversé zéro (c'est un
+  diagnostic, pas un incident) ;
+- le `verdict` l'explicite : « …l'effet est RENVERSÉ par la pénalisation
+  dès δ=… σ — toute « re-significativité » au-delà est l'artefact du
+  renversement, pas une résurrection de l'effet observé ».
 
 **Barrières fail-closed :** m ≥ 2 copies alignées, longueurs constantes,
 grille de floats non vide, `groupe_ajuste ∈ {g1, g2}`, σ_ref non nul.
@@ -105,20 +125,68 @@ tracée), et ne contient **aucun** wall-clock dans le contenu hashé —
 la reproductibilité inter-runs est intacte (voir `run_gates_ui.py`,
 « store idempotent, toutes les refs en v1 »).
 
-## 4. Position dans le pipeline
+## 4. Position dans le pipeline (câblage 1.1.0)
 
-- Les deux ops sont au catalogue (registre `OPS`, versions 1.0.0) et
-  archivées via `ops.executer` : l'inférentiel ne peut invoquer que des ops
-  verrouillées au SAP — la sensibilité suit exactement la même chaîne
-  (schéma LLM en §mode LLM : `role: "secondaire"` planifié comme toute
-  analyse pré-déclarée).
-- La sensibilité MNAR opéré par les résultats imputés (`A1_sensibilite_MI`,
-  δ sur différence brute) reste en place ; le **ruban SMD** est la brique
-  réutilisable catalogue destinée aux endpoints standardisés (SMD), aux
-  déclinaisons ultérieures (δ en unités cliniques, grilles par scénario).
-- Qualification numérique : ces ops composent des primitives déjà qualifiées
-  contre scipy 1.17.1 (OLS/Student, Rubin, Hedges) — voir
-  `docs/QUALIFICATION_SCIPY.md`.
+Les deux sensibilités sont de **vraies analyses du SAP** (rôle dédié
+`sensibilite`), pré-déclarées via la spec, verrouillées à G3 comme toute le
+reste du plan, puis exécutées, recalculées par la relecture et restituées
+dans le rapport — la même chaîne de preuve que la primaire :
+
+1. **Déclaration.** `spec["sensibilite_stabilite"] = {"fenetre_mois": …,
+   "horizon_mois": …}` (défauts verrouillés 12 / 6 ; > 0 et ≤ 12 exigés,
+   ICH Q1E) pour le « passage au grand mail » ; `spec["sensibilite_mnar_smd"]
+   = {"deltas": […], "groupe": …}` pour le ruban MNAR — grille non vide,
+   ≤ 16 points, δ ∈ [0 ; 5 σ], **0.0 obligatoire** (base poolée), groupe
+   pénalisé ∈ contraste (typiquement le bras qui porte les manquants).
+2. **Gabarits SAP.** `ST-SENS-<endpoint>` (stabilité, endpoint principal) ;
+   `A4` (usage 2 groupes à endpoint continu). Seuil et sens du
+   franchissement ne sont PAS figés au SAP : **déduits de façon
+   déterministe** à l'exécution depuis `bornes_acceptation` (borne la plus
+   menacée par la droite des moyennes de réplicats — jamais choisis à vue,
+   tracé en `assumptions` ; pré-déclarables explicitement via
+   `spec_limite` + `direction`, ensemble ou pas du tout).
+3. **Contre-vérification LLM (`_verifier_regles_metier`).** Omit ⇒ rejet ;
+   dévier (décalage grille/groupe/fenêtre/horizon) ⇒ rejet ; proposer une
+   sensibilité **non déclarée** dans la spec ⇒ rejet (jamais de post-hoc) ;
+   incohérence rôle/op (`sensibilite` ↔ les 2 ops du catalogue, dans les
+   deux sens) ⇒ rejet. Tout rejet = repli gabarit journalisé.
+4. **Exécution (agent inférentiel).** Fenêtre glissante : points bruts
+   (réplicats non agrégés — dispersion lot conservée, IC de prévision
+   globale) via le contrôleur (tickets `exec_seq`). Ruban MNAR : copies PMM
+   **alignées** des deux bras de la primaire (Welch/Mann-Whitney) ;
+   « sans objet » (pas d'imputation déclenchée, primaire hors cadre) ⇒
+   non interprétable + contradiction tracée — jamais de ruban de
+   complaisance. La sensibilité ne modifie ni la primaire ni les scores
+   (RA/CC figés par version : elle éclaire, elle ne corrige pas).
+5. **Relecture & rapport.** La relecture recalcule les deux ops depuis les
+   entrées archivées (whitelist étendue : `points`, `fenetre_mois`,
+   `horizon_mois`, `spec_limite`, `direction`, `colonnes_g1/g2`, `deltas`,
+   `groupe_ajuste`) ; un fait sourcé par analyse sensibilité paraît dans
+   `lignes_faits` (verdict complet, renversement inclus le cas échéant).
+6. **Schéma LLM.** `ANALYSE_ITEM` : rôle `sensibilite` + propriétés
+   `fenetre_mois`, `horizon_mois` (≤ 12), `spec_limite`, `direction`,
+   `deltas` (1 à 16), `groupe_mnar` — borne fine revérifiée en aval.
+
+La sensibilité historique du bloc MI (`A1_sensibilite_MI` : pooling Rubin +
+δ sur différence brute, automatique dès qu'une MI tourne) est **inchangée** ;
+le ruban SMD A4 est son complément pré-déclaré et standardisé.
+
+Démo de bout en bout : `python3 demo/run_sensibilite.py` (stabilité à
+dérive lente — franchissement anticipé détecté dès t0=0 alors que le lot
+est encore conforme à 12 mois ; ruban MNAR avec bascule δ=0,25 σ et
+renversement marqué à δ=1 σ ; reproductibilité inter-runs prouvée).
+
+## 5. Qualification numérique
+
+Les deux ops sont **gelées dans l'oracle scipy** (`tests/qualification/`,
+26 → 28 paquets) : contre-implémentations indépendantes
+(`scipy.stats.linregress` + numpy pour les fenêtres ; σ_ref/SMD/Rubin
+numpy pour le ruban — zéro code partagé avec le catalogue). Écart relatif
+max mesuré : **7,1e-10** (< tolérance OPS 1e-9), franchissements et bascules
+à égalité stricte, monotonie recalculée — voir
+`docs/QUALIFICATION_SCIPY.md` §3.6. Le marquage de renversement (1.1.0) est
+validé par tests dédiés (`tests/test_sensibilite_pipeline.py`) sans régéler
+l'oracle : il n'altère aucun calcul gelé.
 
 ---
 

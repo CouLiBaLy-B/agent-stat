@@ -41,6 +41,8 @@ from stats_catalogue import dist                      # noqa: E402
 from stats_catalogue import ops                       # noqa: E402
 from tests.qualification import reference_scipy as REF  # noqa: E402
 from tests.qualification.jeux import jeux             # noqa: E402
+from tests.qualification.jeux import (entrees_mnar_ruban,      # noqa: E402
+                                      entrees_tendance_glissante)
 
 DIST_REL, DIST_ABS = 1e-10, 1e-12
 OPS_REL, OPS_ABS = 1e-9, 1e-12
@@ -357,6 +359,67 @@ class TestOpsQualification(unittest.TestCase):
         ref = self.ops("smd_groupes")
         nous = ops.smd_groupes(J["smd"]["g1"], J["smd"]["g2"])
         ecarts = proches_entrees(ref, nous, {"smd": "smd"}, "smd")
+        self.assertEqual(ecarts, [])
+
+    # --- sensibilité (oracles indépendants numpy/linregress) ----------------
+
+    def test_tendance_fenetre_glissante(self):
+        ref = self.ops("tendance_fenetre_glissante:tendance_glissante")
+        nous = ops.tendance_fenetre_glissante(**entrees_tendance_glissante())
+        self.assertTrue(nous["interpretable"])
+        self.assertEqual(nous["n_fenetres"], ref["n_fenetres"])
+        ecarts = []
+        for f_ref, f_nous in zip(ref["fenetres"], nous["fenetres"]):
+            self.assertEqual(f_nous["t0"], f_ref["t0"])
+            self.assertEqual(f_nous["franchit"], f_ref["franchit"])
+            ecarts += proches_entrees(
+                f_ref, f_nous,
+                {"pente": "pente", "prevision": "prevision",
+                 "borne_pessime": "borne_pessime", "demi_ic": "demi_ic",
+                 "mois_franchissement_prevu": "mois_franchissement_prevu"},
+                f"fenetre_t0_{f_ref['t0']:g}")
+        for cle in ("premier_t0_franchissement",
+                    "premier_mois_franchissement_prevu"):
+            if ref[cle] is None:
+                self.assertIsNone(nous[cle])
+            elif not proche(ref[cle], nous[cle], OPS_REL, OPS_ABS):
+                ecarts.append((cle, ref[cle], nous[cle]))
+        self.assertEqual(ecarts, [])
+
+    def test_tipping_point_mnar_smd(self):
+        ref = self.ops("tipping_point_mnar_smd:mnar_ruban")
+        entrees = entrees_mnar_ruban()
+        # via le registre OPS (lazy-import stats_catalogue.imputation) —
+        # c'est aussi le chemin d'archivage utilisé par le pipeline
+        nous = ops.executer("tipping_point_mnar_smd", 0, **entrees)
+        self.assertTrue(nous["interpretable"])
+        self.assertEqual(len(nous["ruban"]), len(ref["ruban"]))
+        ecarts = []
+        if not proche(ref["sigma_ref"], nous["sigma_ref"], OPS_REL, OPS_ABS):
+            ecarts.append(("sigma_ref", ref["sigma_ref"], nous["sigma_ref"]))
+        for rb_ref, rb_nous in zip(ref["ruban"], nous["ruban"]):
+            self.assertEqual(rb_nous["delta"], rb_ref["delta"])
+            self.assertEqual(rb_nous["significatif"],
+                             rb_ref["p_valeur"] < 0.05)
+            ecarts += proches_entrees(
+                rb_ref, rb_nous,
+                {"theta_pooled": "theta_pooled", "se_pooled": "se_pooled",
+                 "p_valeur": "p_valeur", "ddl": "ddl",
+                 "decalage_unite": "decalage_unite"},
+                f"mnar_delta_{rb_ref['delta']:g}")
+        self.assertEqual(nous["delta_bascule"], ref["delta_bascule"])
+        # monotonie |θ(δ)| recalculée sur les θ gelés (bascule unique)
+        thetas = [abs(rb["theta_pooled"]) for rb in ref["ruban"]]
+        diffs = [thetas[i + 1] - thetas[i]
+                 for i in range(len(thetas) - 1)]
+        self.assertEqual(nous["theta_monotone"],
+                         all(d <= 1e-12 for d in diffs))
+        if ref["decalage_bascule_unite"] is None:
+            self.assertIsNone(nous["decalage_bascule_unite"])
+        elif not proche(ref["decalage_bascule_unite"],
+                        nous["decalage_bascule_unite"], OPS_REL, OPS_ABS):
+            ecarts.append(("decalage_bascule", ref["decalage_bascule_unite"],
+                           nous["decalage_bascule_unite"]))
         self.assertEqual(ecarts, [])
 
 

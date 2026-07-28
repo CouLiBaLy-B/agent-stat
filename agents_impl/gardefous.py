@@ -210,7 +210,13 @@ def fabriquer_relecture(ctx: Contexte):
                               "a", "b", "c", "d", "paires_b", "paires_c",
                               "temps1", "evenements1", "temps2", "evenements2",
                               # ops multivariées (A3 ajustement)
-                              "y", "x", "evenements", "epv_min")}
+                              "y", "x", "evenements", "epv_min",
+                              # sensibilité stabilité « passage au grand mail »
+                              "points", "fenetre_mois", "horizon_mois",
+                              "spec_limite", "direction",
+                              # sensibilité manquants (ruban MNAR δ-ajusté)
+                              "colonnes_g1", "colonnes_g2", "deltas",
+                              "groupe_ajuste")}
             if not appel:
                 objection("entrees_absentes_du_recalcul", aid,
                           "l'artefact ne permet pas le recalcul indépendant")

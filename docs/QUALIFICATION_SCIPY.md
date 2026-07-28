@@ -43,7 +43,7 @@ scripts/
 `gamma_q` — y compris queues extrêmes (p. ex. `t_sf(30 ; 29) ≈ 1e-23`,
 `chi2_sf` jusqu'à ~1e-130, `norm_cdf(−8)`).
 
-**Opérations (`stats_catalogue/ops.py`)** — **26 paquets** sur jeux
+**Opérations (`stats_catalogue/ops.py`)** — **28 paquets** sur jeux
 déterministes (continu, ex æquo forcés par arrondi, cellules nulles,
 censure, échantillons déséquilibrés) :
 
@@ -53,7 +53,7 @@ censure, échantillons déséquilibrés) :
 | rangs | `mann_whitney` (continuité ± ex æquo), `kruskal_wallis` (± correction d'ex æquo — scipy ne la fait pas, ré-implémentation indépendante) | `scipy.stats.mannwhitneyu`, ré-implémentation + `chi2` |
 | tableaux | `odds_ratio_cas_temoins` (Woolf + Haldane), `risque_relatif_cohorte` (Katz + différence Newcombe), `fisher_exact_2x2`, `mcnemar`, `or_apparie`, `chi2_independance` (+ V de Cramér) | `scipy.stats.fisher_exact`, `binomtest`, `chi2_contingency`, ré-implémentations publiées |
 | proportions | `proportion_exacte` (Clopper-Pearson), `proportion_wilson` | `beta.ppf`, formule Wilson |
-| stabilité | `tendance_lineaire` (OLS + IC de prévision) | `linregress` + formule IC prévision |
+| stabilité | `tendance_lineaire` (OLS + IC de prévision), `tendance_fenetre_glissante` (sensibilité « passage au grand mail ») — §3.6 | `linregress` + formule IC prévision |
 | survie | `km_logrank_hr` (KM, log-rang Mantel, HR de Peto) — jeux simple et censuré | ré-implémentation indépendante tabulée par dict |
 | imputation | `pooling_rubin` | ré-implémentation indépendante des règles de Rubin |
 | descriptif | `descriptif_continu` (moyenne, sd, quartiles type 7, se), `smd_groupes` | `np.mean/std/percentile` |
@@ -128,6 +128,33 @@ ex æquo massifs et censure à 70 %) : **4,2e-9** en relatif max
 l'oracle : sans ex æquo sur les temps d'événements, le test du score de
 Cox à 1 covariable binaire **égale** la statistique du log-rang (propriété
 exacte, validée à 10⁻⁹).
+
+### 3.6 Sensibilité : fenêtre glissante & ruban MNAR (tolérance `OPS`)
+
+Les deux ops de sensibilité du catalogue (`tendance_fenetre_glissante`,
+`tipping_point_mnar_smd`) sont qualifiées — comme l'ajustement — par des
+**contre-implémentations indépendantes** ne partageant aucune ligne de
+calcul avec le catalogue :
+
+- `tendance_fenetre_glissante:tendance_glissante` : OLS local par fenêtre
+  via `scipy.stats.linregress`, IC95 de prévision par primitives
+  numpy/Student. Comparaison sur chaque fenêtre couverte (pente, prévision,
+  borne pessimiste, demi-IC, mois de franchissement prévu) ; franchissement
+  (`franchit`) et premiers mois à **égalité stricte** ;
+- `tipping_point_mnar_smd:mnar_ruban` : σ_ref poolé, SMD « catalogue »
+  (sp = √((v1+v2)/2)) + variance asymptotique `_hedges_np`, re-pooling
+  `_rubin_np` — tous numpy. Comparaison par δ du ruban (θ, se, p, ddl,
+  décalage en unités) + σ_ref ; `delta_bascule` à égalité stricte ;
+  monotonie |θ| recalculée sur les θ gelés ;
+- entrées partagées bit-à-bit via `tests/qualification/jeux.py`
+  (`entrees_tendance_glissante()`, `entrees_mnar_ruban()` — le ruban se
+  qualifie sur des copies alignées jitterées : les entrées du tipping point
+  SONT des listes de copies, pas besoin d'un PMM réel — `jeux.py` n'importe
+  jamais le catalogue).
+
+Écart relatif maximal mesuré : **7,1e-10** (tendance : bit-à-bit exact ;
+y compris sur les ddl ~7e4 du Barnard-Rubin de l'oracle) — sous la
+tolérance commune `OPS_REL = 1e-9`.
 
 ## 4. Régénération de l'oracle
 
