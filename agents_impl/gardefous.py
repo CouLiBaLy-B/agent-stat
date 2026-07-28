@@ -105,9 +105,12 @@ def fabriquer_conformite(ctx: Contexte):
         spec, dq = entrees["spec"], entrees["dq"]
         dossier = {
             "type_etude": etat.type_etude,
+            "domaine": etat.domaine,
             "produit": entrees.get("produit", {}),
             "composition": entrees.get("composition", []),
             "methodes_test": entrees.get("methodes_test", []),
+            "claims": entrees.get("claims", []),
+            "etiquetage": entrees.get("etiquetage"),
             "n_lignes": dq["n_lignes"],
             "variables": list(spec.get("variables", {})),
             "var_reaction": spec.get("var_reaction", "reaction_grade"),

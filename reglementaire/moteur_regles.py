@@ -228,6 +228,218 @@ def evaluer_donnees_requises(type_etude: str, dossier: dict) -> list[dict]:
     return regles
 
 
+def _norm_texte(s: str) -> str:
+    return " ".join(str(s).lower().split())
+
+
+def evaluer_claims(ref, claims: list[dict], contexte: dict) -> list[dict]:
+    """UE 655/2013 — critères communs des allégations (cosmétique).
+
+    - R-CLM-01 étayage (C3) : justificatif exigé pour toute allégation ;
+    - R-CLM-02 concordance résultats (C2/C3) : une allégation d'efficacité
+      doit être appuyée par un résultat mesuré, interprétable, significatif
+      et dans la direction favorable — résultat contredisant ⇒ allégation
+      trompeuse ⇒ KO ;
+    - R-CLM-03 lexique contrôlé : motifs sanitaires/trompeurs interdits ⇒ KO ;
+      « sans X » avec X ∈ annexe II ⇒ KO (C1 : le respect de la loi n'est
+      pas un avantage) ; « sans X » autre ⇒ INFO (C5, risque de dénigrement).
+    Lexique NON EXHAUSTIF : un OK n'est pas une autorisation, seulement
+    « aucun motif contrôlé détecté ».
+    """
+    ref655 = ref.claims
+    regles: list[dict] = []
+    resultats = contexte.get("resultats") or {}
+    variables = set(contexte.get("variables") or [])
+    idx_termes = [(t["motif"].lower(), t) for t in
+                  ref655.get("termes_interdits", [])]
+    rx_sans = re.compile(ref655.get("regle_sans_x", {})
+                         .get("motif_regex", r"sans\s+([a-z\- ]+)"))
+
+    for claim in claims:
+        cid = claim.get("id", "?")
+        texte = _norm_texte(claim.get("texte", ""))
+        type_c = claim.get("type", "marketing")
+
+        # ---- R-CLM-01 : étayage -------------------------------------------
+        just = (claim.get("justificatif") or "").strip()
+        if just:
+            regles.append(_regle(
+                f"R-CLM-01-{cid}", "OK",
+                f"justificatif déclaré : {just[:90]}",
+                "UE 655/2013 C3 — étayage", severite="INFO"))
+        else:
+            statut = "KO" if type_c in ("efficacite", "tolerance") \
+                else "INCERTAIN"
+            regles.append(_regle(
+                f"R-CLM-01-{cid}", statut,
+                f"allégation {cid} ({type_c}) sans justificatif — tout claim "
+                "doit être étayé au dossier (C3)",
+                "UE 655/2013 C3 — étayage obligatoire"))
+
+        # ---- R-CLM-02 : concordance avec les résultats mesurés ------------
+        if type_c == "efficacite":
+            endpoint = claim.get("endpoint")
+            if not endpoint:
+                regles.append(_regle(
+                    f"R-CLM-02-{cid}", "INCERTAIN",
+                    f"allégation d'efficacité {cid} sans critère de mesure "
+                    "associé (endpoint absent)",
+                    "UE 655/2013 C2/C3"))
+            elif endpoint not in variables:
+                regles.append(_regle(
+                    f"R-CLM-02-{cid}", "KO",
+                    f"critère '{endpoint}' non mesuré dans l'étude — "
+                    "allégation non étayable sur ces données",
+                    "UE 655/2013 C2/C3"))
+            elif not resultats:
+                regles.append(_regle(
+                    f"R-CLM-02-{cid}", "INCERTAIN",
+                    "aucun résultat calculé disponible pour confronter "
+                    "l'allégation", "UE 655/2013 C3"))
+            else:
+                mesurees = [ana.get("resultat", {})
+                            for ana in resultats.values()
+                            if (ana.get("var")
+                                or ana.get("resultat", {}).get("var"))
+                            == endpoint
+                            and ana.get("role") == "primaire"]
+                if not mesurees:
+                    mesurees = [ana.get("resultat", {})
+                                for ana in resultats.values()
+                                if (ana.get("var")
+                                    or ana.get("resultat", {}).get("var"))
+                                == endpoint]
+                if not mesurees:
+                    regles.append(_regle(
+                        f"R-CLM-02-{cid}", "INCERTAIN",
+                        f"aucun résultat calculé sur '{endpoint}'",
+                        "UE 655/2013 C3"))
+                else:
+                    r = mesurees[0]
+                    sens = 1.0 if claim.get("direction_favorable", "+1") \
+                        not in ("-1", -1) else -1.0
+                    p = r.get("p_valeur")
+                    diff = r.get("difference")
+                    equivalence = r.get("verdict") == "equivalence_demontree"
+                    ok = r.get("interpretable") and (
+                        equivalence
+                        or (p is not None and p < 0.05
+                            and (diff is None or diff * sens > 0)))
+                    detail = (f"résultat '{endpoint}' : p={p}, "
+                              f"différence={diff}, verdict="
+                              f"{r.get('verdict')}, interprétable="
+                              f"{r.get('interpretable')}")
+                    regles.append(_regle(
+                        f"R-CLM-02-{cid}", "OK" if ok else "KO",
+                        (f"résultat concordant avec l'allégation "
+                         f"({detail})") if ok else
+                        (f"résultat NON concordant — allégation trompeuse au "
+                         f"sens du critère de sincérité ({detail})"),
+                        "UE 655/2013 C2 — sincérité"))
+
+        # ---- R-CLM-03 : lexique contrôlé -----------------------------------
+        ko_motifs = [t for motif, t in idx_termes if motif in texte]
+        infos: list[str] = []
+        for m in rx_sans.finditer(texte):
+            x = re.split(r"\s+et\s+|[,.]", m.group(1).strip())[0].strip()
+            if not x:
+                continue
+            from reglementaire.referentiel import normaliser_inci
+            if normaliser_inci(x) in ref.annexe_ii:
+                ko_motifs.append({
+                    "motif": f"sans {x}", "categorie": "sans_x_annexe_ii",
+                    "motif_legal": f"« sans {x} » alors que {x} est interdite "
+                                   "(annexe II) : alléguer le respect de la "
+                                   "loi n'est pas un avantage",
+                    "reference": "UE 655/2013 C1"})
+            else:
+                infos.append(
+                    f"« sans {x} » : risque de dénigrement d'ingrédients "
+                    "conformes (C5) — revue experte")
+        if ko_motifs:
+            t = ko_motifs[0]
+            regles.append(_regle(
+                f"R-CLM-03-{cid}", "KO",
+                f"motif interdit {t['motif']!r} ({t['categorie']}) : "
+                f"{t['motif_legal']}", t["reference"]))
+        elif infos:
+            regles.append(_regle(
+                f"R-CLM-03-{cid}", "INFO", " ; ".join(infos),
+                "UE 655/2013 C5", severite="INFO"))
+        else:
+            regles.append(_regle(
+                f"R-CLM-03-{cid}", "OK",
+                "aucun motif interdit du lexique contrôlé détecté "
+                "(lexique de démonstration non exhaustif)",
+                "UE 655/2013 — critères communs", severite="INFO"))
+    return regles
+
+
+def evaluer_etiquetage(ref, etiquette: dict,
+                       composition: list[dict]) -> list[dict]:
+    """Art. 19 UE 1223/2009 — étiquetage.
+
+    - R-ETQ-01 : mentions obligatoires présentes et non vides (KO sinon) ;
+    - R-ETQ-02 : couverture INCI — tout ingrédient déclaré dans la
+      composition doit figurer sur l'étiquette (KO sinon) ;
+    - R-ETQ-03 : ordre décroissant de concentration pour les ingrédients
+      > 1 % (KO sinon) ; ingrédient d'étiquette non déclaré ⇒ INFO.
+    """
+    from reglementaire.referentiel import normaliser_inci
+    regles: list[dict] = []
+    art19 = ref.claims.get("reference_etiquetage",
+                           "art. 19 UE 1223/2009")
+    mentions = ref.claims.get("mentions_obligatoires_etiquetage", [])
+
+    manquantes = [m["libelle"] for m in mentions
+                  if not etiquette.get(m["champ"])]
+    regles.append(_regle(
+        "R-ETQ-01-mentions-obligatoires",
+        "KO" if manquantes else "OK",
+        ("mentions manquantes ou vides : " + "; ".join(manquantes))
+        if manquantes else
+        f"{len(mentions)} mentions obligatoires présentes",
+        art19))
+
+    etiquettes = [normaliser_inci(e) for e in etiquette.get("liste_inci", [])]
+    composees = [(normaliser_inci(c["inci"]),
+                  c.get("concentration_pct", 0.0))
+                 for c in composition]
+    if etiquettes:
+        absentes = [inci for inci, _ in composees if inci not in etiquettes]
+        regles.append(_regle(
+            "R-ETQ-02-couverture-inci",
+            "KO" if absentes else "OK",
+            ("ingrédients du dossier ABSENTS de l'étiquette : "
+             + ", ".join(absentes)) if absentes else
+            f"les {len(composees)} ingrédients déclarés figurent tous sur "
+            "l'étiquette", art19))
+
+        au_dessus_1 = [(inci, conc) for inci, conc in composees
+                       if conc > 1.0 and inci in etiquettes]
+        ordre_etiquette = sorted(au_dessus_1,
+                                 key=lambda t: etiquettes.index(t[0]))
+        attendu = sorted(au_dessus_1, key=lambda t: -t[1])
+        desordre = [f"{inci} ({conc} %)" for (inci, conc), (a, _)
+                    in zip(ordre_etiquette, attendu) if inci != a]
+        regles.append(_regle(
+            "R-ETQ-03-ordre-inci",
+            "KO" if desordre else "OK",
+            ("ordre décroissant > 1 % non respecté : " + ", ".join(desordre))
+            if desordre else
+            f"{len(au_dessus_1)} ingrédients > 1 % en ordre décroissant "
+            "réglementaire", art19))
+        non_declares = [e for e in etiquettes
+                        if e not in {i for i, _ in composees}]
+        if non_declares:
+            regles.append(_regle(
+                "R-ETQ-03b-incoherence-dossier", "INFO",
+                "ingrédients d'étiquette non déclarés dans la composition du "
+                "dossier : " + ", ".join(non_declares),
+                "cohérence dossier/étiquette", severite="INFO"))
+    return regles
+
+
 def evaluer_stabilite(dossier: dict) -> list[dict]:
     """R-STAB-01 : respect des bornes d'acceptation à l'échéance observée,
     tendance et marge de sécurité (IC de prédiction)."""
@@ -272,6 +484,29 @@ def evaluer_dossier(ref, dossier: dict) -> dict:
     regles += evaluer_donnees_requises(dossier.get("type_etude", ""), dossier)
     if dossier.get("type_etude") == "stabilite":
         regles += evaluer_stabilite(dossier)
+    if dossier.get("domaine") == "cosmetique":
+        composition = dossier.get("composition", [])
+        claims = dossier.get("claims") or []
+        etiquette = dossier.get("etiquetage")
+        if claims:
+            regles += evaluer_claims(ref, claims, {
+                "resultats": dossier.get("resultats"),
+                "variables": dossier.get("variables")})
+        else:
+            regles.append(_regle(
+                "R-CLM-00-aucune-declaree", "INFO",
+                "aucune allégation produit déclarée au dossier — le contrôle "
+                "UE 655/2013 s'appliquera dès qu'une allégation est revendiquée "
+                "(tout claim non déclaré n'est pas vérifié)",
+                "UE 655/2013 C3", severite="INFO"))
+        if etiquette:
+            regles += evaluer_etiquetage(ref, etiquette, composition)
+        else:
+            regles.append(_regle(
+                "R-ETQ-00-non-fourni", "INFO",
+                "étiquetage non fourni — mentions art. 19 à produire avant "
+                "mise sur le marché (contrôle non bloquant à ce stade)",
+                "art. 19 UE 1223/2009", severite="INFO"))
     bloquantes = [r["regle"] for r in regles if r["statut"] == "KO"]
     incertaines = [r["regle"] for r in regles if r["statut"] == "INCERTAIN"]
     verdict = ("NON_CONFORME_BLOQUANT" if bloquantes else

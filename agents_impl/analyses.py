@@ -443,7 +443,8 @@ def fabriquer_inferentiel(ctx: Contexte):
                 res.update(meta_apparie)
             resultats[ana["id"]] = {
                 "op_retenue": op, "version": catalogue.OPS[op]["version"],
-                "role": ana["role"], "resultat": res, "entrees": entrees_op}
+                "role": ana["role"], "var": ana.get("var"),
+                "resultat": res, "entrees": entrees_op}
 
         # — sensibilité MI poolée + tipping point MNAR (données imputées aval) —
         sensibilites: dict = {}

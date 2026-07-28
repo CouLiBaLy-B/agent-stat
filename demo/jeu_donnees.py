@@ -73,6 +73,34 @@ def generer(seed: int = 20260727, n_par_groupe: int = 30,
         ],
         "methodes_test": ["in vitro OCDE 439 (irritation cutanée, épiderme reconstruit)",
                           "test d'usage sous contrôle dermatologique"],
+        # Allégations revendiquées (contrôlées par R-CLM-01/02/03 — UE 655/2013)
+        "claims": [
+            {"id": "C1", "type": "efficacite",
+             "texte": "Améliore visiblement le confort et l'aspect de la peau "
+                      "après 4 semaines d'utilisation",
+             "endpoint": "delta_score", "direction_favorable": "+1",
+             "justificatif": "étude test d'usage COS-2026-014, 60 sujets, "
+                             "4 semaines, contrôle parallèle"},
+            {"id": "C2", "type": "tolerance",
+             "texte": "Tolérance cutanée évaluée sous contrôle dermatologique",
+             "justificatif": "test d'usage sous contrôle dermatologique, "
+                             "grades de réaction consignés"},
+            {"id": "C3", "type": "marketing",
+             "texte": "Texture légère à absorption rapide",
+             "justificatif": "évaluation sensorielle interne réf. SEN-2026-07"},
+        ],
+        # Étiquetage produit (contrôlé par R-ETQ-01/02/03 — art. 19)
+        "etiquetage": {
+            "responsable_nom_adresse": "Cosmétique Démo SAS, 12 rue des Tests, 75010 Paris",
+            "pays_origine": "France",
+            "contenu_nominal": "50 ml e",
+            "pao_ou_dluo": "12M après ouverture",
+            "precautions": "Éviter le contact avec les yeux. Usage externe uniquement.",
+            "numero_lot": "L2026-0714",
+            "fonction_produit": "Crème de soin visage (confiance cutanée)",
+            "liste_inci": ["aqua", "glycerin", "niacinamide",
+                           "phenoxyethanol", "dmdm hydantoin"],
+        },
     }
 
 

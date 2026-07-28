@@ -20,14 +20,20 @@ rapportée INCERTAIN (revue experte), jamais conforme par défaut.
 | `substances_connues.json` | INCI courants sans restriction — base de la couverture | aqua, glycerin, niacinamide, tocopherol… |
 | `methodes_alternatives_oecd.json` | TG OCDE validées (431, 439, 428, 442C/D/E, 437, 492B, 471, 487) + motifs animaux interdits | "Draize" → KO art. 18 ; "OCDE 439" → OK ; méthode inconnue → INCERTAIN |
 | `sccs_params.json` | MoS ≥ 100, absorption par défaut 50 %, ordres d'exposition/jour, réf. SCCS NoG 12 | consommés par l'agent sécurité (MoS) |
+| `claims_etiquetage.json` | 6 critères communs UE 655/2013, lexique contrôlé des allégations interdites/trompeuses, règle « sans X », 8 mentions art. 19 | détail et règles R-CLM/R-ETQ : **`docs/CLAIMS_ETIQUETAGE.md`** |
 
-`Referentiel.sha256` = empreinte du corpus complet, **citée dans chaque
-compliance_report** (preuve de la version de droit appliquée à cette étude).
+`Referentiel.sha256` = empreinte du corpus complet (6 fichiers, incluant le
+bloc claims/étiquetage), **citée dans chaque compliance_report** (preuve de
+la version de droit appliquée à cette étude).
 
 ## Moteur (`reglementaire/moteur_regles.py`)
 
 Règles = données + évaluateurs typés. Statuts : `OK` / `KO` (→ blocage dur) /
 `INCERTAIN` (→ gate humain G4 expert réglementaire) / `INFO` (étiquetage, notes).
+Familles : R-REG-* (substances), R-MET-* (méthodes), R-COUV-01 (couverture),
+R-DON-01/02/03 (données minimales), R-STAB-01 (bornes stabilité), R-OBS-01
+(lexique), **R-CLM-\*** (allégations UE 655/2013, concordance allégué ↔ mesuré)
+et **R-ETQ-\*** (étiquetage art. 19) — cf. `docs/CLAIMS_ETIQUETAGE.md`.
 Principes stricts : contexte produit obligatoire (données requises R-DON-01 le vérifie),
 dérogation non applicable au contexte = interdiction appliquée, agrégats calculés sur la
 composition normalisée, INCI inconnue = couverture −1 + INCERTAIN tracé.

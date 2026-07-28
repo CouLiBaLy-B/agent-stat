@@ -187,7 +187,10 @@ class TestPipelineAvecReferentiel(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             donnees = generer()
             donnees["composition"].append(
-                {"inci": "extrait de lichen rare", "concentration_pct": 1.0})
+                {"inci": "extrait de lichen rare", "concentration_pct": 0.5})
+            donnees["etiquetage"]["liste_inci"].append(
+                "extrait de lichen rare")    # étiquette cohérente (le test
+            # vise l'INCI inconnue = INCERTAIN, pas l'art. 19)
             with self.assertRaises(PipelineBloque) as ctx:
                 run_pipeline(self._etat(), self._sys(d, DECISIONS_OK, donnees),
                              donnees)
@@ -205,7 +208,9 @@ class TestPipelineAvecReferentiel(unittest.TestCase):
                                                "results_inferential"]}
             donnees = generer()
             donnees["composition"].append(
-                {"inci": "extrait de lichen rare", "concentration_pct": 1.0})
+                {"inci": "extrait de lichen rare", "concentration_pct": 0.5})
+            donnees["etiquetage"]["liste_inci"].append(
+                "extrait de lichen rare")    # étiquette cohérente
             etat = run_pipeline(self._etat(), self._sys(d, dec, donnees),
                                 donnees)
             self.assertEqual(etat.statut, "TERMINE")

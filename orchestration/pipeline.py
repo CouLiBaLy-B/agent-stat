@@ -15,6 +15,12 @@ Ordre nominal :
   ingredients   : [{"inci", "noael_mg_kg_j", "sed_mg_kg_j"}]   (cosmétique)
   composition   : [{"inci", "concentration_pct"}]
   methodes_test : ["in vitro OCDE 439", "test d'usage sous contrôle", …]
+  claims        : [{"id", "texte", "type"(efficacite|tolerance|marketing),
+                    "endpoint"?, "direction_favorable"?, "justificatif"?}]
+                  (cosmétique — critères UE 655/2013, contrôlés par R-CLM-*)
+  etiquetage    : {responsable_nom_adresse, pays_origine, contenu_nominal,
+                   pao_ou_dluo, precautions, numero_lot, fonction_produit,
+                   liste_inci:[…]}         (art. 19 — R-ETQ-*)
 """
 from __future__ import annotations
 
@@ -167,6 +173,8 @@ def run_pipeline(etat: Etat, sys_: dict, donnees: dict) -> Etat:
         {"composition": donnees.get("composition", []),
          "methodes_test": donnees.get("methodes_test", []),
          "produit": donnees.get("produit", {}),
+         "claims": donnees.get("claims", []),
+         "etiquetage": donnees.get("etiquetage"),
          "resultats": resultats["resultats"],
          "spec": spec, "dq": dq_content, "dq_ref": dq["dq_ref"]},
         gate_apres=lambda et, s: o.gate_conformite(et, s, s["artefacts"][0]))

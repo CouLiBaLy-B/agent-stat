@@ -40,6 +40,7 @@ class Referentiel:
     motifs_animaux: list[str]
     sccs: dict
     agregats: list[dict]
+    claims: dict = field(default_factory=dict)   # UE 655/2013 + art. 19
     _synonymes: dict[str, str] = field(repr=False, default_factory=dict)
 
     def canonique(self, nom: str) -> str:
@@ -81,7 +82,8 @@ def charger_referentiel(refresh: bool = False) -> Referentiel:
         return _CACHE
     corp = {n: _charger(f"{n}.json")
             for n in ("annexe_ii", "restrictions", "substances_connues",
-                      "methodes_alternatives_oecd", "sccs_params")}
+                      "methodes_alternatives_oecd", "sccs_params",
+                      "claims_etiquetage")}
     empreinte = hashlib.sha256(json.dumps(
         corp, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     a2, s2 = _indexer(corp["annexe_ii"]["substances"])
@@ -98,5 +100,6 @@ def charger_referentiel(refresh: bool = False) -> Referentiel:
         motifs_animaux=corp["methodes_alternatives_oecd"]
                           ["motifs_animaux_interdits"],
         sccs=corp["sccs_params"], agregats=corp["restrictions"]["agregats"],
+        claims=corp["claims_etiquetage"],
         _synonymes=synonymes)
     return _CACHE
