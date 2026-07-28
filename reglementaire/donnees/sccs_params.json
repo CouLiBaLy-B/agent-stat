@@ -1,0 +1,15 @@
+{
+  "version": "2.0.0",
+  "statut": "paramètres par défaut inspirés des SCCS Notes of Guidance (12e éd.)",
+  "poids_corporel_defaut_kg": 60,
+  "seuil_mos": 100,
+  "absorption_cutanee_defaut_pct": 50,
+  "absorption_note": "en l'absence de données OCDE 428, une absorption par défaut de 50 % est appliquée ; 100 % si arguments contraires — toute hypothèse d'absorption crée une zone d'incertitude tracée",
+  "expositions_types_jour": {
+    "creme_visage": 1.54,
+    "produit_capillaire_rince": 13.0,
+    "creme_corps": 7.8,
+    "note_unites": "g/jour — ordres de grandeur SCCS, à affiner au dossier produit"
+  },
+  "references": ["SCCS Notes of Guidance for the Testing of Cosmetic Ingredients and their Safety Evaluation, 12e révision (2023)"]
+}

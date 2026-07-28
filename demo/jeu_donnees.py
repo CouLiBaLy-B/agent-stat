@@ -62,11 +62,14 @@ def generer(seed: int = 20260727, n_par_groupe: int = 30,
             {"inci": "niacinamide", "noael_mg_kg_j": 200.0, "sed_mg_kg_j": 1.0},
             {"inci": "phenoxyethanol", "noael_mg_kg_j": 183.0, "sed_mg_kg_j": 0.88},
         ],
+        "produit": {"application": "leave_on", "usage": "creme_visage",
+                    "zone": "visage", "population_cible": "adulte"},
         "composition": [
             {"inci": "aqua", "concentration_pct": 72.0},
             {"inci": "glycerin", "concentration_pct": 8.0},
             {"inci": "niacinamide", "concentration_pct": 4.0},
-            {"inci": "formaldehyde", "concentration_pct": 0.05},  # ≤ 0,2 % : OK
+            {"inci": "phenoxyethanol", "concentration_pct": 0.5},   # ≤ 1,0 % : OK
+            {"inci": "dmdm hydantoin", "concentration_pct": 0.3},   # ≤ 0,6 % : OK
         ],
         "methodes_test": ["in vitro OCDE 439 (irritation cutanée, épiderme reconstruit)",
                           "test d'usage sous contrôle dermatologique"],

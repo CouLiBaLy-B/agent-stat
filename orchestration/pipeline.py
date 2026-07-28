@@ -160,6 +160,7 @@ def run_pipeline(etat: Etat, sys_: dict, donnees: dict) -> Etat:
         etat, "conformite", "agent.conformite",
         {"composition": donnees.get("composition", []),
          "methodes_test": donnees.get("methodes_test", []),
+         "produit": donnees.get("produit", {}),
          "spec": spec, "dq": dq_content, "dq_ref": dq["dq_ref"]},
         gate_apres=lambda et, s: o.gate_conformite(et, s, s["artefacts"][0]))
 

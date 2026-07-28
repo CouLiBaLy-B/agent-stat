@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  "statut": "substances cosmétiques d'usage courant sans restriction spécifique dans ce corpus — permet la mesure de couverture INCI",
+  "substances": [
+    {"inci": "aqua", "synonymes": ["water", "eau"]},
+    {"inci": "glycerin", "synonymes": ["glycerol", "glycerine"]},
+    {"inci": "niacinamide", "synonymes": ["nicotinamide", "vitamine b3"]},
+    {"inci": "tocopherol", "synonymes": ["vitamine e"]},
+    {"inci": "butyrospermum parkii butter", "synonymes": ["shea butter", "karite"]},
+    {"inci": "cetearyl alcohol", "synonymes": []},
+    {"inci": "cetyl alcohol", "synonymes": []},
+    {"inci": "stearic acid", "synonymes": []},
+    {"inci": "glyceryl stearate", "synonymes": []},
+    {"inci": "xanthan gum", "synonymes": ["gomme xanthane"]},
+    {"inci": "sodium hyaluronate", "synonymes": ["hyaluronate de sodium"]},
+    {"inci": "hyaluronic acid", "synonymes": ["acide hyaluronique"]},
+    {"inci": "panthenol", "synonymes": ["provitamine b5", "dexpanthenol"]},
+    {"inci": "squalane", "synonymes": []},
+    {"inci": "caprylic/capric triglyceride", "synonymes": ["triglyceride caprylique"]},
+    {"inci": "dimethicone", "synonymes": ["polydimethylsiloxane"]},
+    {"inci": "carbomer", "synonymes": []},
+    {"inci": "sodium hydroxide", "synonymes": ["soude", "hydroxyde de sodium"], "note": "ajusteur de pH — usage courant"},
+    {"inci": "citric acid", "synonymes": ["acide citrique"]},
+    {"inci": "paraffinum liquidum", "synonymes": ["mineral oil", "huile minerale"]},
+    {"inci": "petrolatum", "synonymes": ["vaseline"]},
+    {"inci": "retinol", "synonymes": ["vitamine a"], "note": "sans restriction UE spécifique ; limites SCCS d'usage à documenter dans le CPSR"},
+    {"inci": "caffeine", "synonymes": ["cafeine"]}
+  ]
+}

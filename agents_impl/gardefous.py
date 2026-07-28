@@ -81,95 +81,51 @@ def fabriquer_securite(ctx: Contexte):
 
 # ------------------------------------------------------------------ conformité réglementaire
 
-# ⚠ ÉCHANTILLON PÉDAGOGIQUE — remplacer en production par le référentiel
-# structuré versionné (annexes II–VI consolidées). Toute règle cite sa source.
-ANNEXE_II_ECHANTILLON = {"chloroform", "hydroquinone", "mercury", "arsenic"}
-RESTREINTES_ECHANTILLON = {
-    "formaldehyde": {"annexe": "V", "limite_pct": 0.2,
-                     "role": "conservateur"},
-}
-
-
 def fabriquer_conformite(ctx: Contexte):
+    """Évalue le dossier via le moteur de règles v2 (reglementaire/) :
+    contexte produit (leave_on/rinse_off, usage, zone, population), dérogations,
+    agrégats, couverture INCI. Chaque règle cite référence + version/hash du corpus."""
     ctx.producteur = "agent.conformite"
 
     def agent(etat: Etat, entrees: dict) -> dict:
-        composition = entrees.get("composition", [])   # [{inci, concentration_pct}]
-        methodes = [m.lower() for m in entrees.get("methodes_test", [])]
+        from reglementaire.moteur_regles import evaluer_dossier
+        from reglementaire.referentiel import charger_referentiel
+        ref = charger_referentiel()
         spec, dq = entrees["spec"], entrees["dq"]
-        regles: list[dict] = []
-        bloquantes, incertaines = [], []
+        dossier = {
+            "type_etude": etat.type_etude,
+            "produit": entrees.get("produit", {}),
+            "composition": entrees.get("composition", []),
+            "methodes_test": entrees.get("methodes_test", []),
+            "n_lignes": dq["n_lignes"],
+            "variables": list(spec.get("variables", {})),
+            "var_reaction": spec.get("var_reaction", "reaction_grade"),
+            "composition_presente": bool(entrees.get("composition")),
+            "dq_score": dq.get("score_dq"),
+        }
+        res = evaluer_dossier(ref, dossier)
 
-        def add(regle, statut, preuve, reference):
-            regles.append({"regle": regle, "statut": statut,
-                           "preuve": preuve, "reference": reference})
-            if statut == "KO":
-                bloquantes.append(regle)
-            elif statut == "INCERTAIN":
-                incertaines.append(regle)
-
-        # R-REG-01 : annexe II (substances interdites)
-        interdites = [c["inci"] for c in composition
-                      if c["inci"].strip().lower() in ANNEXE_II_ECHANTILLON]
-        add("R-REG-01-annexe-II",
-            "KO" if interdites else "OK",
-            f"substances interdites détectées : {interdites}" if interdites
-            else f"{len(composition)} INCI contrôlés, aucun ∈ annexe II (échantillon)",
-            "Règlement (CE) n°1223/2009, annexe II — référentiel pédagogique v1")
-
-        # R-REG-02 : annexes III–VI (restrictions de concentration)
-        for c in composition:
-            cle = c["inci"].strip().lower()
-            if cle in RESTREINTES_ECHANTILLON:
-                r = RESTREINTES_ECHANTILLON[cle]
-                conc = c.get("concentration_pct", 0.0)
-                ok = conc <= r["limite_pct"]
-                add(f"R-REG-02-{cle}",
-                    "OK" if ok else "KO",
-                    f"{cle} {conc}% vs limite {r['limite_pct']}% (annexe {r['annexe']})",
-                    f"Règlement (CE) n°1223/2009, annexe {r['annexe']} — échantillon v1")
-
-        # R-MET-01 : interdiction expérimentation animale → méthodes alternatives
-        animales = [m for m in methodes if "animal" in m]
-        add("R-MET-01-methodes-alternatives",
-            "KO" if animales else "OK",
-            f"méthodes animales détectées : {animales}" if animales
-            else "méthodes déclarées compatibles alternatives validées",
-            "Règlement (CE) n°1223/2009, art. 18 — priorité aux méthodes alternatives")
-
-        # R-DON-01 : données minimales pour un test d'usage (verdict 'insuffisant')
-        if etat.type_etude == "test_usage_controle":
-            manques = []
-            if dq["n_lignes"] < 30:
-                manques.append(f"n={dq['n_lignes']} < 30 sujets")
-            if spec.get("var_reaction", "reaction_grade") not in spec["variables"]:
-                manques.append("données de tolérance (grades) absentes")
-            if not composition:
-                manques.append("composition INCI absente")
-            add("R-DON-01-donnees-minimales",
-                "KO" if manques else "OK",
-                "; ".join(manques) if manques
-                else f"n={dq['n_lignes']} ≥ 30, tolérance et INCI présents",
-                "SCCS Notes of Guidance — évaluation de sécurité avant mise sur le marché")
-
-        verdict = ("NON_CONFORME_BLOQUANT" if bloquantes else
-                   "CONFORME_SOUS_RESERVE" if incertaines else
-                   "CONFORME" if regles else "INSUFFISANT")
-        rapport = {"verdict": verdict, "regles": regles,
+        rapport = {**res,
                    "revues_expertes_requises":
-                       (["expert_reglementaire"] if bloquantes or incertaines else [])
-                       + (["toxicologue"] if any("MoS" in b for b in bloquantes) else []),
-                   "avertissement": "référentiel échantillon — la conformité réelle "
-                                    "exige le référentiel consolidé et la revue humaine"}
+                       (["expert_reglementaire"]
+                        if res["regles_ko"] or res["regles_incertaines"] else []),
+                   "avertissement": ("corpus de démonstration élargi v2 — la conformité "
+                                     "réelle exige la base consolidée officielle et la "
+                                     "revue d'un expert réglementaire")}
         art = depot(ctx, etat.study_id, "compliance", "compliance_report", rapport,
                     utilisant=[entrees.get("dq_ref")])
         return sortie(confidence=0.85, artefacts=[art],
-                      assumptions=["référentiel pédagogique v1 — échantillon",
-                                   "toute règle KO/KO-bloquante est escaladée"],
-                      contradictions=[] if not incertaines else
-                      [f"règles incertaines : {incertaines}"],
-                      verdict_conformite=verdict,
-                      regles_ko=bloquantes, regles_incertaines=incertaines,
+                      assumptions=[f"corpus {res['corpus']['version']} "
+                                   f"sha256:{res['corpus']['sha256'][:12]}…",
+                                   "toute règle KO ou INCERTAIN est escaladée",
+                                   f"couverture INCI {res['couverture_inci']['resolues']}"
+                                   f"/{res['couverture_inci']['total']}"],
+                      contradictions=[] if not res["regles_incertaines"] else
+                      [f"règles incertaines : {res['regles_incertaines']}"],
+                      verdict_conformite=res["verdict"],
+                      regles_ko=res["regles_ko"],
+                      regles_incertaines=res["regles_incertaines"],
+                      couverture_inci=res["couverture_inci"],
                       compliance_ref=art.ref)
     return agent
 

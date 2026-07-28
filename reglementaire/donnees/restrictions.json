@@ -1,0 +1,66 @@
+{
+  "version": "2.0.0",
+  "statut": "corpus de démonstration élargi — NON EXHAUSTIF",
+  "source": "Règlement (CE) n°1223/2009, annexes III–VI + avis SCCS associés",
+  "modele_conditions": "chaque limite porte une 'condition' {champ_produit: [valeurs]} ; condition vide = toutes situations ; si aucune condition ne correspond au contexte produit → INCERTAIN",
+  "substances": [
+    {"inci": "salicylic acid", "synonymes": ["acide salicylique"], "annexe": "III",
+     "limites": [
+       {"condition": {"population_cible": ["enfant", "nourrisson"]}, "max_pct": 0.0, "verdict": "KO", "note": "ne pas utiliser chez l'enfant de moins de 3 ans"},
+       {"condition": {"application": ["rinse_off"], "usage": ["produit_capillaire"]}, "max_pct": 3.0},
+       {"condition": {}, "max_pct": 2.0}],
+     "avertissements": ["ne pas utiliser chez l'enfant de moins de 3 ans"],
+     "note": "rôle conservateur : annexe V/3 (0,5 %) si usage conservateur déclaré"},
+    {"inci": "hydrogen peroxide", "synonymes": ["peroxyde d'hydrogene", "eau oxygenee"], "annexe": "III",
+     "limites": [
+       {"condition": {"zone": ["cheveux"]}, "max_pct": 12.0},
+       {"condition": {"zone": ["ongles"]}, "max_pct": 2.0},
+       {"condition": {"zone": ["peau", "visage", "corps"]}, "max_pct": 4.0},
+       {"condition": {}, "max_pct": 4.0}]},
+    {"inci": "thioglycolic acid", "synonymes": ["thioglycolate", "acide thioglycolique"], "annexe": "III",
+     "limites": [
+       {"condition": {"usage": ["depilation"]}, "max_pct": 5.0},
+       {"condition": {"zone": ["cheveux"]}, "max_pct": 8.0}]},
+    {"inci": "oxybenzone", "synonymes": ["benzophenone-3"], "annexe": "VI",
+     "limites": [{"condition": {}, "max_pct": 6.0}],
+     "note": "taux réduits zones faciales selon avis SCCS 2021 — à reparamétrer sur consolidé"},
+    {"inci": "butyl methoxydibenzoylmethane", "synonymes": ["avobenzone", "bm-dbm", "parsol 1789"], "annexe": "VI",
+     "limites": [{"condition": {}, "max_pct": 5.0}]},
+    {"inci": "octocrylene", "synonymes": [], "annexe": "VI",
+     "limites": [{"condition": {}, "max_pct": 10.0}]},
+    {"inci": "titanium dioxide", "synonymes": ["bioxyde de titane"], "annexe": "VI",
+     "limites": [{"condition": {}, "max_pct": 25.0}],
+     "note": "forme nano : restrictions voie inhalée (sprays) — contrôle contexte requis"},
+    {"inci": "zinc oxide", "synonymes": ["oxyde de zinc"], "annexe": "VI",
+     "limites": [{"condition": {}, "max_pct": 25.0}],
+     "note": "pas d'exposition par inhalation (sprays)"},
+    {"inci": "phenoxyethanol", "synonymes": ["phenoxyethanolum"], "annexe": "V",
+     "limites": [{"condition": {}, "max_pct": 1.0}]},
+    {"inci": "methylparaben", "synonymes": [], "annexe": "V",
+     "limites": [{"condition": {}, "max_pct": 0.4}], "groupe_agregat": "parabens"},
+    {"inci": "ethylparaben", "synonymes": [], "annexe": "V",
+     "limites": [{"condition": {}, "max_pct": 0.4}], "groupe_agregat": "parabens"},
+    {"inci": "propylparaben", "synonymes": [], "annexe": "V",
+     "limites": [{"condition": {}, "max_pct": 0.14}], "groupe_agregat": "parabens"},
+    {"inci": "butylparaben", "synonymes": [], "annexe": "V",
+     "limites": [{"condition": {}, "max_pct": 0.14}], "groupe_agregat": "parabens"},
+    {"inci": "dmdm hydantoin", "synonymes": [], "annexe": "V",
+     "limites": [{"condition": {}, "max_pct": 0.6}],
+     "note": "libérateur de formaldéhyde — formaldéhyde libre à surveiller (avis SCCS)"},
+    {"inci": "methylisothiazolinone", "synonymes": ["mit", "mi"], "annexe": "V",
+     "limites": [
+       {"condition": {"application": ["rinse_off"]}, "max_pct": 0.0015},
+       {"condition": {"application": ["leave_on"]}, "max_pct": 0.0, "verdict": "KO"}],
+     "note": "interdit en produits non rincés (leave-on) depuis 2017"},
+    {"inci": "methylchloroisothiazolinone", "synonymes": ["mcit", "kathon cg", "methylchloroisothiazolinone methylisothiazolinone"], "annexe": "V",
+     "limites": [
+       {"condition": {"application": ["rinse_off"]}, "max_pct": 0.0015},
+       {"condition": {"application": ["leave_on"]}, "max_pct": 0.0, "verdict": "KO"}],
+     "note": "mélange 3:1 avec MIT — leave-on interdit"}
+  ],
+  "agregats": [
+    {"id": "parabens_somme", "groupe": "parabens",
+     "regle": "somme des concentrations ≤ max", "max_pct": 0.8,
+     "reference": "annexe V, entrée 12 (somme des parabens)"}
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "version": "2.0.0",
+  "statut": "corpus de démonstration élargi — NON EXHAUSTIF",
+  "source": "Règlement (CE) n°1223/2009, annexe II (JOUE consolidé) — extraction partielle",
+  "avertissement": "La conformité réelle exige la base consolidée officielle complète (~1 700 entrées) + revue d'un expert réglementaire. Les références numériques sont renseignées uniquement lorsqu'elles sont fiables ; sinon ref=null avec a_verifier=true.",
+  "substances": [
+    {"inci": "chloroform", "synonymes": ["trichloromethane"], "ref": null, "a_verifier": true, "note": "substance CMR historiquement interdite"},
+    {"inci": "hydroquinone", "synonymes": ["quinol", "1,4-dihydroxybenzene"], "ref": "1339", "note": "dérogation annexe III/14 : systèmes d'ongles artificiels ≤ 0,02 %",
+     "derogations": [{"usage": ["ongles_artificiels"], "max_pct": 0.02}]},
+    {"inci": "mercury", "synonymes": ["mercure", "mercury compounds"], "ref": null, "a_verifier": true, "note": "et ses composés (traces ≤ 1 ppm tolérées si inévitables)"},
+    {"inci": "arsenic", "synonymes": ["arsenic compounds"], "ref": null, "a_verifier": true, "note": "et ses composés"},
+    {"inci": "lead", "synonymes": ["plomb", "lead acetate", "lead compounds"], "ref": null, "a_verifier": true, "note": "et ses composés"},
+    {"inci": "cadmium", "synonymes": ["cadmium compounds"], "ref": null, "a_verifier": true, "note": "et ses composés"},
+    {"inci": "formaldehyde", "synonymes": ["formol", "formaldehyde solution"], "ref": "1577", "note": "CMR1B — dérogations indirectes possibles via libérateurs sous limites SCCS"},
+    {"inci": "benzene", "synonymes": [], "ref": null, "a_verifier": true, "note": "CMR1A"},
+    {"inci": "diethylhexyl phthalate", "synonymes": ["dehp", "bis(2-ethylhexyl) phthalate"], "ref": null, "a_verifier": true, "note": "phtalate reprotoxique"},
+    {"inci": "dibutyl phthalate", "synonymes": ["dbp"], "ref": null, "a_verifier": true, "note": "phtalate reprotoxique"},
+    {"inci": "benzyl butyl phthalate", "synonymes": ["bbp"], "ref": null, "a_verifier": true, "note": "phtalate reprotoxique"},
+    {"inci": "n-nitrosodimethylamine", "synonymes": ["ndma", "nitrosamines", "ndela", "n-nitrosodiethanolamine"], "ref": null, "a_verifier": true, "note": "nitrosamines : formation in situ à contrôler"},
+    {"inci": "mequinol", "synonymes": ["hydroquinone monomethyl ether", "4-methoxyphenol"], "ref": null, "a_verifier": true, "note": "dépigmentant interdit"}
+  ]
+}

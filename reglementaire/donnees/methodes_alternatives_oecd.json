@@ -1,0 +1,17 @@
+{
+  "version": "2.0.0",
+  "statut": "méthodes alternatives validées (lignes directrices OCDE) — prioritaires en UE (art. 18)",
+  "methodes": [
+    {"tg": "431", "intitule": "corrosion cutanée in vitro (épiderme reconstruit)", "domaine": "irritation_corrosion", "statut": "validee_reglementaire"},
+    {"tg": "439", "intitule": "irritation cutanée in vitro (épiderme reconstruit)", "domaine": "irritation_corrosion", "statut": "validee_reglementaire"},
+    {"tg": "428", "intitule": "absorption cutanée in vitro", "domaine": "toxicocinetique_locale", "statut": "validee_reglementaire"},
+    {"tg": "442C", "intitule": "sensibilisation — DPRA (chimique)", "domaine": "sensibilisation", "statut": "validee_reglementaire"},
+    {"tg": "442D", "intitule": "sensibilisation — KeratinoSens (ARE-Nrf2)", "domaine": "sensibilisation", "statut": "validee_reglementaire"},
+    {"tg": "442E", "intitule": "sensibilisation — h-CLAT (activation cellulaire)", "domaine": "sensibilisation", "statut": "validee_reglementaire"},
+    {"tg": "437", "intitule": "irritation oculaire — BCOP", "domaine": "irritation_oculaire", "statut": "validee_reglementaire"},
+    {"tg": "492B", "intitule": "irritation oculaire — épithélium cornéen reconstruit", "domaine": "irritation_oculaire", "statut": "validee_reglementaire"},
+    {"tg": "471", "intitule": "mutagénicité bactérienne (Ames)", "domaine": "genotoxicite", "statut": "validee_reglementaire"},
+    {"tg": "487", "intitule": "micronoyaux in vitro (génotoxicité)", "domaine": "genotoxicite", "statut": "validee_reglementaire"}
+  ],
+  "motifs_animaux_interdits": ["animal", "draize", "lapin", "souris", "rat ", "cobaye", "in vivo animal", "lethal dose", "dl50"]
+}
