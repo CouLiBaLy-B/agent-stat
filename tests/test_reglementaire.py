@@ -125,8 +125,13 @@ class TestMethodes(unittest.TestCase):
         self.assertEqual(rs[0]["statut"], "OK")
 
     def test_methode_inconnue_incertitude(self):
-        rs = evaluer_methodes(REF, ["spectrométrie hyperspectrale ex vivo"])
+        rs = evaluer_methodes(REF, ["chlurbidométrie quantique"])
         self.assertEqual(rs[0]["statut"], "INCERTAIN")
+
+    def test_methode_stabilite_reconnue(self):
+        rs = evaluer_methodes(REF, ["suivi physico-chimique multi-temps "
+                                    "(pH, viscosité)"])
+        self.assertEqual(rs[0]["statut"], "OK")
 
 
 class TestDossierComplet(unittest.TestCase):

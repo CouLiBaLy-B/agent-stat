@@ -55,6 +55,16 @@ def fabriquer_biais(ctx: Contexte):
         g1, g2 = spec.get("contraste", ["produit", "controle"])
         r1 = [r for r in rows if r.get(groupe) == g1]
         r2 = [r for r in rows if r.get(groupe) == g2]
+        if not r1 or not r2:
+            art = depot(ctx, etat.study_id, "biais", "bias_report",
+                        {"non_applicable": True,
+                         "motif": "pas de variable de groupe — design sans "
+                                  "comparaison de bras (stabilité, série)",
+                         "checklist": ["selection", "mesure", "reporting"]})
+            return sortie(confidence=0.9, artefacts=[art],
+                          assumptions=["analyse de biais inter-bras non "
+                                       "applicable"], biais_critiques=[],
+                          biais_ref=art.ref)
         ctrl = ControleurExecution(etat.seed)
         mesures, graves = [], []
         for cov in spec.get("covariables_baseline", []):
@@ -93,9 +103,10 @@ def fabriquer_hypotheses(ctx: Contexte):
         groupe = spec.get("variable_groupe", "groupe")
         ctrl = ControleurExecution(etat.seed)
         verdicts = {}
+        OPS_NORMALITE = {"t_test_welch", "tost_equivalence"}  # précondition gaussienne
         for ana in sap["analyses"]:
             op = ana["op"]
-            if op != "t_test_welch":
+            if op not in OPS_NORMALITE:
                 verdicts[ana["id"]] = {"op_prevue": op, "op_retenue": op,
                                        "motif": "pas de précondition testée"}
                 continue
@@ -137,27 +148,73 @@ def fabriquer_manquants(ctx: Contexte):
     ctx.producteur = "agent.manquants"
 
     def agent(etat: Etat, entrees: dict) -> dict:
+        from stats_catalogue import imputation
         sap, spec = entrees["sap"], entrees["spec"]
         rows = entrees["datasets"]["rows"]
         ep = spec["endpoint_principal"]
         n = len(rows)
-        taux_ep = 1 - len(numeriques(rows, ep)) / max(1, n)
+        cible = [r.get(ep) for r in rows]
+        taux_ep = imputation.taux_manquants(cible)
         if taux_ep > 0.40:
             raise ErreurLogique(
                 f">{40:.0%} de manquants sur l'endpoint — escalade data management")
+
+        # mécanisme : indépendance(manquant, groupe) — écran MAR grossier
+        mecanisme = {"verdict": "non testé (taux ≤ 5 %)"}
+        ctrl = ControleurExecution(etat.seed)
         if taux_ep > 0.05:
-            raise ErreurLogique(   # stratégie SAP inapplicable en MVP → escalade
-                f"taux manquants {taux_ep:.1%} > 5 % : imputation multiple requise"
-                " (hors MVP) → escalade biostatisticien")
-        rapport = {"endpoint": ep, "taux_manquants_endpoint": round(taux_ep, 4),
+            groupe = spec.get("variable_groupe")
+            if groupe:
+                mods = sorted({r.get(groupe) for r in rows})
+                if len(mods) == 2:
+                    a = sum(1 for r in rows if r.get(groupe) == mods[0]
+                            and r.get(ep) in (None, ""))
+                    b = sum(1 for r in rows if r.get(groupe) == mods[0]) - a
+                    c = sum(1 for r in rows if r.get(groupe) == mods[1]
+                            and r.get(ep) in (None, ""))
+                    d = sum(1 for r in rows if r.get(groupe) == mods[1]) - c
+                    f = ctrl.executer(catalogue.fisher_exact_2x2,
+                                      "fisher_exact_2x2", "1.0.0", a=a, b=b,
+                                      c=c, d=d)
+                    mecanisme = {"test": "fisher manquants × groupe",
+                                 "p_valeur": f["p_valeur"],
+                                 "verdict": ("taux différentiel suspect (MNAR à "
+                                             "documenter)" if f["p_valeur"] < 0.10
+                                             else "pas de signal MNAR grossier")}
+
+        datasets_completes, indices, m = None, [], 0
+        if taux_ep > 0.05:
+            m = max(20, int(round(taux_ep * 100)))     # m ≥ taux×100 (règle usuelle)
+            pred_nom = (spec.get("covariables_baseline") or [None])[0]
+            pred = [r.get(pred_nom) for r in rows] if pred_nom else None
+            colonnes, indices = imputation.imputer_pmm(cible, pred, m, etat.seed)
+            datasets_completes = []
+            for k, col in enumerate(colonnes):
+                copie = [dict(r) for r in rows]
+                for i, v in enumerate(col):
+                    copie[i][ep] = v
+                datasets_completes.append(copie)
+
+        strategie = ("cas complets (taux ≤ 5 %)" if taux_ep <= 0.05 else
+                     f"imputation multiple PMM m={m} (prédicteur baseline "
+                     "si complet, sinon hot-deck) ; sensibilité MNAR : "
+                     "delta-adjustment / tipping point côté inferentiel")
+        rapport = {"endpoint": ep, "n": n,
+                   "taux_manquants_endpoint": round(taux_ep, 4),
                    "strategie_gabarit": sap["gestion_manquants"]["strategie"],
-                   "strategie_appliquee": "cas complets (taux ≤ 5 %)",
-                   "mecanisme": "non testé (taux négligeable)",
-                   "sensibilite_mnar": "non requise par le SAP à ce taux"}
+                   "strategie_appliquee": strategie, "m": m,
+                   "indices_imputes": indices, "mecanisme": mecanisme,
+                   "sensibilite_mnar": ("delta-adjustment tipping point (δ "
+                                        "pénalisant produit)" if m else
+                                        "non requise par le SAP à ce taux")}
         art = depot(ctx, etat.study_id, "missingness", "missingness", rapport,
                     utilisant=[entrees.get("sap_ref")])
         return sortie(confidence=0.9, artefacts=[art],
-                      assumptions=["cas complets : taux ≤ 5 % conforme au SAP"],
+                      assumptions=[strategie,
+                                   f"mécanisme : {mecanisme.get('verdict')}",
+                                   "PMM : donneurs réels, seed dérivée"],
+                      datasets_completes=datasets_completes,
+                      indices_imputes=indices, mecanisme=mecanisme,
                       manquants_ref=art.ref)
     return agent
 
@@ -203,19 +260,36 @@ def fabriquer_inferentiel(ctx: Contexte):
         rows = entrees["datasets"]["rows"]
         groupe = spec.get("variable_groupe", "groupe")
         ctrl = ControleurExecution(etat.seed)
-        resultats = {}
+        resultats: dict = {}
+
+        def _deux_groupes(ana, lignes):
+            g1, g2 = ana.get("contraste", ["produit", "controle"])
+            return (numeriques([r for r in lignes if r.get(groupe) == g1], ana["var"]),
+                    numeriques([r for r in lignes if r.get(groupe) == g2], ana["var"]))
+
         for ana in sap["analyses"]:
             op = verdicts.get(ana["id"], {}).get("op_retenue", ana["op"])
             if op not in catalogue.OPS:
                 raise ErreurLogique(f"{ana['id']} : op {op!r} hors catalogue")
             entrees_op: dict = {}
-            if op == "t_test_welch" or op == "mann_whitney":
-                g1, g2 = ana.get("contraste", ["produit", "controle"])
-                entrees_op = {
-                    "g1": numeriques([r for r in rows if r.get(groupe) == g1],
-                                     ana["var"]),
-                    "g2": numeriques([r for r in rows if r.get(groupe) == g2],
-                                     ana["var"])}
+            if op in ("t_test_welch", "mann_whitney"):
+                va, vb = _deux_groupes(ana, rows)
+                entrees_op = {"g1": va, "g2": vb}
+            elif op == "tost_equivalence":
+                marge = ana.get("marge") or spec.get("marge_equivalence")
+                if not marge:
+                    raise ErreurLogique(f"{ana['id']} : marge d'équivalence "
+                                        "exigée au SAP (Δ > 0 pré-définie)")
+                va, vb = _deux_groupes(ana, rows)
+                entrees_op = {"g1": va, "g2": vb, "marge": float(marge)}
+            elif op == "tendance_lineaire":
+                var_temps = ana.get("par_temps") or spec.get("var_temps", "mois")
+                paires = sorted(
+                    (float(r[var_temps]), float(r[ana["var"]])) for r in rows
+                    if r.get(var_temps) is not None and r.get(ana["var"]) is not None)
+                entrees_op = {"temps": [t for t, _ in paires],
+                              "valeurs": [v for _, v in paires],
+                              "var": ana["var"]}
             elif op == "descriptif_continu":
                 entrees_op = {"valeurs": numeriques(rows, ana["var"])}
             elif op == "proportion_exacte":
@@ -236,18 +310,75 @@ def fabriquer_inferentiel(ctx: Contexte):
                     "entrees": {"definition": ana.get(
                         "definition", f">= {seuil} grade reaction")}}
                 continue
+            appel = {k: v for k, v in entrees_op.items() if k != "var"}
             res = ctrl.executer(catalogue.OPS[op]["fn"], op,
-                                catalogue.OPS[op]["version"], **entrees_op)
+                                catalogue.OPS[op]["version"], **appel)
+            if op == "tendance_lineaire" and res.get("interpretable"):
+                res["var"] = entrees_op["var"]
             resultats[ana["id"]] = {
                 "op_retenue": op, "version": catalogue.OPS[op]["version"],
                 "role": ana["role"], "resultat": res, "entrees": entrees_op}
+
+        # — sensibilité MI poolée + tipping point MNAR (données imputées aval) —
+        sensibilites: dict = {}
+        datasets = entrees.get("datasets_completes")
+        a1 = next((a for a in sap["analyses"] if a.get("role") == "primaire"), None)
+        if datasets and a1 and a1["var"] == spec["endpoint_principal"]:
+            g1n, g2n = a1.get("contraste", ["produit", "controle"])
+            idx = set(entrees.get("indices_imputes", []))
+            estimations, par_jeu = [], []
+            for rows_k in datasets:
+                va = [float(r[a1["var"]]) for r in rows_k if r.get(groupe) == g1n]
+                vb = [float(r[a1["var"]]) for r in rows_k if r.get(groupe) == g2n]
+                w = catalogue.t_test_welch(g1=va, g2=vb, seed=etat.seed)
+                if w.get("interpretable"):
+                    estimations.append({"theta": w["difference"], "se": w["se"]})
+                    par_jeu.append(w)
+            if estimations:
+                pool = ctrl.executer(catalogue.pooling_rubin, "pooling_rubin",
+                                     "1.0.0", estimations=estimations)
+                tipping, flip = [], None
+                for delta in (0.5, 1.0, 2.0, 3.0, 4.0):
+                    est_d = []
+                    for rows_k in datasets:
+                        va = [float(r[a1["var"]]) - delta if (i in idx) else
+                              float(r[a1["var"]])
+                              for i, r in enumerate(rows_k)
+                              if r.get(groupe) == g1n]
+                        vb = [float(r[a1["var"]]) for r in rows_k
+                              if r.get(groupe) == g2n]
+                        w = catalogue.t_test_welch(g1=va, g2=vb, seed=etat.seed)
+                        if w.get("interpretable"):
+                            est_d.append({"theta": w["difference"], "se": w["se"]})
+                    if est_d:
+                        pd = catalogue.pooling_rubin(estimations=est_d,
+                                                     seed=etat.seed)
+                        if pd.get("interpretable"):
+                            tipping.append({"delta": delta,
+                                            "p_valeur": pd["p_valeur"]})
+                            if flip is None and pd["p_valeur"] >= 0.05:
+                                flip = delta
+                p_prim = resultats.get("A1", {}).get("resultat", {}).get("p_valeur")
+                sensibilites["A1_sensibilite_MI"] = {
+                    "type": "imputation_multiple_PMM + delta_adjustment",
+                    "m": len(estimations), "pooled": pool,
+                    "delta_grid_penalise_produit": tipping,
+                    "delta_flip": flip,
+                    "concordante_primaire": (
+                        p_prim is not None and pool.get("interpretable")
+                        and (pool["p_valeur"] < 0.05) == (p_prim < 0.05)),
+                    "nb_estimations": len(estimations)}
         art = depot(ctx, etat.study_id, "results", "results_inferential",
-                    {"resultats": resultats, "journal_execution": ctrl.journal,
+                    {"resultats": resultats, "sensibilites": sensibilites,
+                     "journal_execution": ctrl.journal,
                      "double_execution": "hashes concordants"},
                     utilisant=[entrees.get("sap_ref"),
                                entrees.get("assumptions_ref")])
+        assumptions = ["1:1 SAP↔opérations vérifié", "double exécution concordante"]
+        if sensibilites:
+            assumptions.append("sensibilité MI : PMM poolée Rubin + tipping point δ")
         return sortie(confidence=0.92, artefacts=[art],
-                      assumptions=["1:1 SAP↔opérations vérifié",
-                                   "double exécution concordante"],
-                      resultats=resultats, results_ref=art.ref)
+                      assumptions=assumptions,
+                      resultats=resultats, sensibilites=sensibilites,
+                      results_ref=art.ref)
     return agent

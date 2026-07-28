@@ -28,9 +28,10 @@ déterministe), documente et propose ; l'humain valide aux étapes critiques (fa
 ## Exécuter
 
 ```bash
-python3 demo/run_demo.py                                 # pipeline complet (mode déterministe)
+python3 demo/run_demo.py                                 # test d'usage cosmétique E2E (déterministe)
+python3 demo/run_stabilite.py                            # parcours stabilité E2E (bornes + tendances)
 AGENT_STAT_LLM_MODE=llm-simule python3 demo/run_demo.py  # même pipeline, agents LLM (simulés)
-python3 -m unittest discover -s tests                    # 52 tests
+python3 -m unittest discover -s tests                    # 86 tests
 python3 - <<'EOF'
 from core.audit import JournalAudit
 print(JournalAudit.verifier("runtime/demo/audit.jsonl"))   # (True, n, 'chaîne intègre')

@@ -51,10 +51,9 @@ def repondre_proposition_sap(utilisateur: str, appel: int = 1) -> dict:
     fabrique = GABARITS.get(corpus.get("type_etude")) or GABARITS[
         "test_usage_controle"]
     analyses = fabrique(spec_reconstruit, {})
-    for ana in analyses:                       # respecter le schéma (pas de clé "hypotheses")
-        ana.pop("hypotheses", None)
-        ana.pop("definition", None)
-        ana.pop("multiplicite", None)
+    for ana in analyses:                       # respecter le schéma LLM (clés limitées)
+        for cle in ("hypotheses", "definition", "multiplicite", "bornes", "note"):
+            ana.pop(cle, None)
     return {
         "analyses": analyses,
         "gestion_multiplicite": ("gatekeeping : primaire d'abord ; Holm si "

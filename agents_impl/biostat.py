@@ -23,13 +23,24 @@ from stats_catalogue.ops import OPS
 def _gabarit_usage_cosmetique(spec: dict, dq: dict) -> list[dict]:
     ep = spec["endpoint_principal"]
     groupe = spec.get("variable_groupe", "groupe")
+    contraste = spec.get("contraste", ["produit", "controle"])
+    marge = spec.get("marge_equivalence")
+    if marge:   # objectif d'équivalence : TOST, marge Δ pré-définie (ICH E9)
+        a1 = {"id": "A1", "role": "primaire", "op": "tost_equivalence",
+              "var": ep, "par": groupe, "contraste": contraste,
+              "marge": float(marge),
+              "hypotheses": ["normalite_par_groupe"],
+              "note": "pas de fallback rangs en MVP — échec de précondition "
+                      "= déviation G3"}
+    else:
+        a1 = {"id": "A1", "role": "primaire", "op": "t_test_welch", "var": ep,
+              "par": groupe, "contraste": contraste,
+              "hypotheses": ["normalite_par_groupe"],
+              "fallback": {"si": "non_normal", "op": "mann_whitney"}}
     return [
         {"id": "A0a", "role": "descriptif", "op": "descriptif_continu",
          "var": ep, "par": groupe},
-        {"id": "A1", "role": "primaire", "op": "t_test_welch", "var": ep,
-         "par": groupe, "contraste": spec.get("contraste", ["produit", "controle"]),
-         "hypotheses": ["normalite_par_groupe"],
-         "fallback": {"si": "non_normal", "op": "mann_whitney"}},
+        a1,
         {"id": "A2", "role": "safety", "op": "proportion_exacte",
          "var": spec.get("var_reaction", "reaction_grade"),
          "definition": f">= {spec.get('seuil_grade_reaction', 2)}",
@@ -41,11 +52,24 @@ def _gabarit_observationnel(spec: dict, dq: dict) -> list[dict]:
     return _gabarit_usage_cosmetique(spec, dq)  # MVP : même trame, lexique contrôlé en aval
 
 
+def _gabarit_stabilite(spec: dict, dq: dict) -> list[dict]:
+    bornes = spec.get("bornes_acceptation", {})
+    if not bornes or not spec.get("var_temps"):
+        raise ErreurLogique("stabilité : 'bornes_acceptation' et 'var_temps' "
+                            "requis dans la spec")
+    ep = spec["endpoint_principal"]
+    return [{"id": f"ST-{var}", "role": "primaire" if var == ep else "secondaire",
+             "op": "tendance_lineaire", "var": var,
+             "par_temps": spec["var_temps"],
+             "bornes": bornes[var]} for var in bornes]
+
+
 GABARITS = {
     "test_usage_controle": _gabarit_usage_cosmetique,
     "tolerance_cutanee": _gabarit_usage_cosmetique,
     "observationnelle_transversale": _gabarit_observationnel,
     "cas_temoins": _gabarit_observationnel,
+    "stabilite": _gabarit_stabilite,
 }
 
 OPS_PARAMETRIQUES = {"t_test_welch"}

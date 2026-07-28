@@ -30,6 +30,8 @@ ANALYSE_ITEM = {
         "par": {"type": "string"},
         "contraste": {"type": "array", "minItems": 2, "maxItems": 2,
                       "items": {"type": "string"}},
+        "par_temps": {"type": "string"},
+        "marge": {"type": "number", "minimum": 0},
         "fallback": {"type": "object", "additionalProperties": False,
                      "required": ["si", "op"],
                      "properties": {

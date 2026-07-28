@@ -21,6 +21,17 @@ def fabriquer_securite(ctx: Contexte):
     def agent(etat: Etat, entrees: dict) -> dict:
         rows, spec = entrees["datasets"]["rows"], entrees["spec"]
         var = spec.get("var_reaction", "reaction_grade")
+        if var not in spec.get("variables", {}):
+            rapport = {"non_applicable": True,
+                       "motif": "aucune variable de tolérance dans la spec — "
+                                "type d'étude sans collecte de réactions",
+                       "signaux": [], "mos_min": None, "grade_max_observe": 0,
+                       "table_mos": [], "zones_incertitude": []}
+            art = depot(ctx, etat.study_id, "safety", "safety_report", rapport)
+            return sortie(confidence=0.95, artefacts=[art],
+                          assumptions=["volet tolérance non applicable à ce type "
+                                       "d'étude"], signaux=[], mos_min=None,
+                          grade_max=0, safety_ref=art.ref)
         seuil_g = spec.get("seuil_grade_reaction", 2)
         seuil_pct = spec.get("seuil_reactions_pct", 5.0) / 100.0
         groupe = spec.get("variable_groupe", "groupe")
@@ -100,8 +111,10 @@ def fabriquer_conformite(ctx: Contexte):
             "n_lignes": dq["n_lignes"],
             "variables": list(spec.get("variables", {})),
             "var_reaction": spec.get("var_reaction", "reaction_grade"),
-            "composition_presente": bool(entrees.get("composition")),
-            "dq_score": dq.get("score_dq"),
+            "var_temps": spec.get("var_temps"),
+            "bornes_acceptation": spec.get("bornes_acceptation", {}),
+            "points_temps": spec.get("points_temps", []),
+            "resultats": entrees.get("resultats"),
         }
         res = evaluer_dossier(ref, dossier)
 
@@ -178,7 +191,8 @@ def fabriquer_relecture(ctx: Contexte):
                                   f"{recalc['proportion']}")
                 continue
             attendu = ana.get("resultat", {})
-            appel = {k: v for k, v in ent.items() if k in ("g1", "g2", "valeurs")}
+            appel = {k: v for k, v in ent.items()
+                     if k in ("g1", "g2", "valeurs", "temps", "marge")}
             if not appel:
                 objection("entrees_absentes_du_recalcul", aid,
                           "l'artefact ne permet pas le recalcul indépendant")

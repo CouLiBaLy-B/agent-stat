@@ -326,6 +326,115 @@ def mos_cosmetique(noael_mg_kg_j: float | None, sed_mg_kg_j: float,
             "zone_incertitude": False}
 
 
+def pooling_rubin(estimations: list[dict], alpha: float = 0.05,
+                  seed: int = 0) -> dict:
+    """Pooling des règles de Rubin après imputation multiple.
+    estimations : [{"theta", "se"}] par jeu imputé (m ≥ 2).
+    Retourne l'estimation poolée, son erreur, la variance intra/inter,
+    la fraction d'information manquante (FMI) et l'IC/p poolés."""
+    m = len(estimations)
+    if m < 2:
+        return {"interpretable": False, "motif": "m < 2 : pooling impossible"}
+    thetas = [e["theta"] for e in estimations]
+    ses = [e["se"] for e in estimations]
+    qbar = _moy(thetas)
+    ubar = _moy([s * s for s in ses])                    # variance intra
+    b = (sum((t - qbar) ** 2 for t in thetas) / (m - 1))  # variance inter
+    tvar = ubar + (1 + 1 / m) * b
+    se = math.sqrt(tvar)
+    if tvar == 0 or se == 0:
+        return {"interpretable": False, "motif": "variances nulles"}
+    r = (1 + 1 / m) * b / ubar if ubar > 0 else 0.0       # augmentation relative
+    if b > 0 and ubar > 0:
+        lam = (1 + 1 / m) * b / tvar
+        ddl = max(1.0, (m - 1) / (lam * lam))
+    else:
+        ddl = float(m) * 10 ** 6
+    fmi = ((r + 2 / (ddl + 3)) / (1 + r)) if ddl < 1e12 else r / (1 + r)
+    tc = dist.t_ppf(1 - alpha / 2, ddl)
+    t_stat = qbar / se
+    return {"interpretable": True, "test": "pooling_rubin", "m": m,
+            "theta_pooled": qbar, "se_pooled": se, "p_valeur":
+            2 * dist.t_sf(abs(t_stat), ddl),
+            "ic95": [qbar - tc * se, qbar + tc * se],
+            "variance_intra": ubar, "variance_inter": b,
+            "augmentation_relative": r, "fraction_info_manquante": fmi, "ddl": ddl}
+
+
+def tost_equivalence(g1: list[float], g2: list[float], marge: float,
+                     alpha: float = 0.05, seed: int = 0) -> dict:
+    """TOST (two one-sided tests) d'équivalence de moyennes (approx. Welch).
+    Exige une marge Δ PRÉ-DÉFINIE (SAP). p non significatif ≠ équivalence :
+    seul le rejet conjoint des deux tests unilatéraux (équiv. IC (1-2α)
+    ⊂ [-Δ, +Δ]) permet de conclure à l'équivalence."""
+    if marge is None or marge <= 0:
+        return {"interpretable": False,
+                "motif": "marge d'équivalence > 0 exigée (pré-définie au SAP)"}
+    n1, n2 = len(g1), len(g2)
+    if n1 < 2 or n2 < 2:
+        return {"interpretable": False, "motif": "effectif < 2 par groupe"}
+    m1, m2 = _moy(g1), _moy(g2)
+    v1, v2 = _sd(g1) ** 2, _sd(g2) ** 2
+    se = math.sqrt(v1 / n1 + v2 / n2)
+    if se == 0:
+        return {"interpretable": False, "motif": "variances nulles"}
+    diff = m1 - m2
+    ddl = (v1 / n1 + v2 / n2) ** 2 / ((v1 / n1) ** 2 / (n1 - 1)
+                                      + (v2 / n2) ** 2 / (n2 - 1))
+    t1, t2 = (diff + marge) / se, (marge - diff) / se
+    p1 = dist.t_sf(t1, ddl)          # H0_1 : diff ≤ -Δ
+    p2 = dist.t_sf(t2, ddl)          # H0_2 : diff ≥ +Δ
+    p_tost = max(p1, p2)
+    tc = dist.t_ppf(1 - alpha, ddl)
+    ic90 = [diff - tc * se, diff + tc * se]
+    equivalence = (p_tost < alpha) and (ic90[0] >= -marge) and (ic90[1] <= marge)
+    return {"interpretable": True, "test": "tost_equivalence", "n1": n1, "n2": n2,
+            "difference": diff, "se": se, "marge": marge, "ddl": ddl,
+            "p_tost": p_tost, "p_infe": p1, "p_supe": p2,
+            "ic90_difference": ic90,
+            "verdict": "equivalence_demontree" if equivalence
+            else "equivalence_non_demontree"}
+
+
+def tendance_lineaire(temps: list[float], valeurs: list[float],
+                      alpha: float = 0.05, seed: int = 0) -> dict:
+    """Régression linéaire simple y ~ temps — parcours stabilité.
+    Fournit pente + IC, prédiction à l'échéance observée + IC de prédiction,
+    diagnostics résiduels. La règle métier (bornes d'acceptation) est
+    évaluée en aval par le moteur de règles (R-STAB-01)."""
+    n = len(temps)
+    if n < 4 or len(set(temps)) < 2:
+        return {"interpretable": False, "motif": "≥ 4 points et ≥ 2 temps uniques"}
+    assert n == len(valeurs), "temps/valeurs désalignés"
+    mx, my = _moy(temps), _moy(valeurs)
+    sxx = sum((t - mx) ** 2 for t in temps)
+    sxy = sum((t - mx) * (v - my) for t, v in zip(temps, valeurs))
+    beta, alpha0 = sxy / sxx, my - (sxy / sxx) * mx
+    fitted = [alpha0 + beta * t for t in temps]
+    residus = [v - f for v, f in zip(valeurs, fitted)]
+    s2 = sum(r * r for r in residus) / (n - 2)
+    sd_r = math.sqrt(s2)
+    se_b = sd_r / math.sqrt(sxx)
+    tc = dist.t_ppf(1 - alpha / 2, n - 2)
+    t_max, t_min = max(temps), min(temps)
+    pred = alpha0 + beta * t_max
+    se_pred = sd_r * math.sqrt(1 / n + (t_max - mx) ** 2 / sxx)
+    ic_pred = [pred - tc * se_pred, pred + tc * se_pred]
+    vals_tmax = [v for t, v in zip(temps, valeurs) if t == t_max]
+    syy = sum((v - my) ** 2 for v in valeurs)
+    r2 = 1 - (s2 * (n - 2)) / syy if syy > 0 else 1.0
+    return {"interpretable": True, "test": "tendance_lineaire", "n": n,
+            "pente": beta, "se_pente": se_b,
+            "ic95_pente": [beta - tc * se_b, beta + tc * se_b],
+            "p_valeur_pente": 2 * dist.t_sf(abs(beta / se_b) if se_b > 0
+                                            else 0.0, n - 2),
+            "intercept": alpha0, "r2": r2,
+            "temps_min": t_min, "temps_max": t_max,
+            "moyenne_tmax": _moy(vals_tmax),
+            "prevision_tmax": pred, "ic95_prevision_tmax": ic_pred,
+            "residus_sd": sd_r, "residus_max_abs": max(abs(r) for r in residus)}
+
+
 # ------------------------------------------------------------------ registre
 
 OPS: dict[str, dict] = {
@@ -341,6 +450,9 @@ OPS: dict[str, dict] = {
     "test_normalite":        {"fn": test_normalite,       "version": "1.0.0"},
     "smd_groupes":           {"fn": smd_groupes,          "version": "1.0.0"},
     "mos_cosmetique":        {"fn": mos_cosmetique,       "version": "1.0.0"},
+    "pooling_rubin":         {"fn": pooling_rubin,        "version": "1.0.0"},
+    "tost_equivalence":      {"fn": tost_equivalence,     "version": "1.0.0"},
+    "tendance_lineaire":     {"fn": tendance_lineaire,    "version": "1.0.0"},
 }
 
 

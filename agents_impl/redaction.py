@@ -47,7 +47,15 @@ def fabriquer_redaction(ctx: Contexte):
         # ---------- FAITS ---------------------------------------------------
         faits: list[str] = []
         a1 = res.get("A1", {}).get("resultat", {})
-        if a1.get("interpretable"):
+        if a1.get("interpretable") and a1.get("test") == "tost_equivalence":
+            ic90 = a1.get("ic90_difference") or [None, None]
+            faits.append(
+                f"- Équivalence (TOST, marge Δ={_fmt(a1.get('marge'))}) : "
+                f"différence {_fmt(a1.get('difference'))} "
+                f"(IC90 % [{_fmt(ic90[0])} ; {_fmt(ic90[1])}]), "
+                f"p_TOST {_fmt_p(a1.get('p_tost'))} → "
+                f"{a1.get('verdict', '').replace('_', ' ')} {_src(src_res)}")
+        elif a1.get("interpretable"):
             faits.append(
                 f"- Critère principal `{sap['endpoint_principal']['variable']}` : "
                 f"différence {_fmt(a1.get('difference'))} "
@@ -55,6 +63,27 @@ def fabriquer_redaction(ctx: Contexte):
                 f"{_fmt((a1.get('ic95_difference') or [None, None])[1])}]), "
                 f"test {a1.get('test')}, p {_fmt_p(a1.get('p_valeur'))}, "
                 f"taille d'effet d={_fmt(a1.get('taille_effet_cohen_d'))} {_src(src_res)}")
+        sens = e["resultats"].get("sensibilites", {}).get("A1_sensibilite_MI")
+        if sens and sens.get("pooled", {}).get("interpretable"):
+            p = sens["pooled"]
+            faits.append(
+                f"- Sensibilité (imputation multiple PMM m={sens['m']}, pooling "
+                f"de Rubin) : effet poolé {_fmt(p['theta_pooled'])} "
+                f"(IC95 % [{_fmt(p['ic95'][0])} ; {_fmt(p['ic95'][1])}]), "
+                f"p {_fmt_p(p['p_valeur'])}, FMI {_fmt(100*p['fraction_info_manquante'],1)} %, "
+                f"tipping δ={sens.get('delta_flip')} {_src(src_res)}")
+        for aid, ana in res.items():
+            if ana.get("op_retenue") != "tendance_lineaire":
+                continue
+            r = ana["resultat"]
+            if r.get("interpretable"):
+                bornes = (e["spec"].get("bornes_acceptation", {})
+                          .get(r.get("var")))
+                faits.append(
+                    f"- Stabilité `{r.get('var')}` : pente {_fmt(r['pente'],4)}/temps "
+                    f"(IC95 % [{_fmt(r['ic95_pente'][0],4)} ; {_fmt(r['ic95_pente'][1],4)}]), "
+                    f"moyenne à {r['temps_max']} = {_fmt(r['moyenne_tmax'],2)} "
+                    f"(bornes {bornes}) {_src(src_res)}")
         a2 = res.get("A2", {})
         for g, r in a2.get("par_groupe", {}).items():
             ic = r.get("ic95") or [None, None]
@@ -72,7 +101,16 @@ def fabriquer_redaction(ctx: Contexte):
         # ---------- INFÉRENCES ----------------------------------------------
         inferences: list[str] = []
         conclusion_directionnelle = None
-        if a1.get("interpretable") and cc >= 0.4:
+        if a1.get("test") == "tost_equivalence" and a1.get("interpretable"):
+            ok_eq = a1.get("verdict") == "equivalence_demontree"
+            inferences.append(
+                f"- Lecture TOST : l'équivalence des moyennes est "
+                f"{'démontrée' if ok_eq else 'NON démontrée'} au sens de la marge "
+                f"Δ pré-définie ; seul le rejet conjoint des deux tests "
+                f"unilatéraux autorise cette formulation.")
+            conclusion_directionnelle = "tost_" + ("equivalence" if ok_eq
+                                                   else "non_equivalence")
+        elif a1.get("interpretable") and cc >= 0.4:
             sig = a1.get("p_valeur", 1.0) < 0.05
             inferences.append(
                 f"- Au seuil 5 %, la différence observée sur le critère principal "
@@ -101,6 +139,7 @@ def fabriquer_redaction(ctx: Contexte):
                         "soumettre à validation humaine G6.")
 
         # ---------- décision proposée (borne la force) -----------------------
+        a1 = res.get("A1", {}).get("resultat", {})
         if conf.get("verdict_conformite") == "NON_CONFORME_BLOQUANT":
             decision = "Ne pas poursuivre en l'état — non-conformité bloquante."
         elif any(s.get("grade", 0) >= 2 for s in safety.get("signaux", [])):
@@ -108,6 +147,10 @@ def fabriquer_redaction(ctx: Contexte):
         elif cc < 0.4:
             decision = ("Données insuffisantes pour conclure — tests/compléments "
                         "requis avant réévaluation.")
+        elif a1.get("test") == "tost_equivalence" and \
+                a1.get("verdict") == "equivalence_demontree":
+            decision = ("Équivalence démontrée selon la marge pré-définie — "
+                        "soumis à validation humaine G6.")
         else:
             decision = ("Avis favorable prudent proposé — soumis à validation "
                         "humaine G6.")

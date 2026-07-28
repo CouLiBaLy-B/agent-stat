@@ -125,25 +125,25 @@ def run_pipeline(etat: Etat, sys_: dict, donnees: dict) -> Etat:
     o.gate_humain(etat, "G3", sap["artefacts"][0], sla_h=72)
     etat.verrous["sap_sha256"] = sap["sap_sha256"]
 
-    # [7] hypothèses → contrôle du verrou → calcul inférentiel -----------------
-    etat.phase = Phase.CALCUL_STATISTIQUE.value
+    # [7-8] hypothèses → manquants (imputations) → contrôle verrou → calcul -----
+    etat.phase = Phase.GESTION_MANQUANTS.value
     hypo = o.execute(etat, "controle_hypotheses", "agent.hypotheses",
                      {"sap": sap["sap"], "spec": spec,
                       "datasets": donnees["datasets"], "sap_ref": sap["sap_ref"]})
+    manq = o.execute(etat, "gestion_manquants", "agent.manquants",
+                     {"sap": sap["sap"], "spec": spec,
+                      "datasets": donnees["datasets"], "sap_ref": sap["sap_ref"]})
+    etat.phase = Phase.CALCUL_STATISTIQUE.value
     art_sap_courant = store.resoudre("sap", etat.study_id, "sap")
     o.verifier_verrou_sap(etat, art_sap_courant.sha256)
     resultats = o.execute(etat, "calcul_inferentiel", "agent.inferentiel",
                           {"sap": sap["sap"], "spec": spec,
                            "datasets": donnees["datasets"],
                            "verdicts_hypotheses": hypo["verdicts"],
+                           "datasets_completes": manq["datasets_completes"],
+                           "indices_imputes": manq["indices_imputes"],
                            "sap_ref": sap["sap_ref"],
                            "assumptions_ref": hypo["assumptions_ref"]})
-
-    # [8] manquants -------------------------------------------------------------
-    etat.phase = Phase.GESTION_MANQUANTS.value
-    manq = o.execute(etat, "gestion_manquants", "agent.manquants",
-                     {"sap": sap["sap"], "spec": spec,
-                      "datasets": donnees["datasets"], "sap_ref": sap["sap_ref"]})
 
     # [9-10] anomalies + safety (G4 conditionnel) + conformité ------------------
     etat.phase = Phase.EVALUATION_SECURITE_TOLERANCE.value
@@ -161,6 +161,7 @@ def run_pipeline(etat: Etat, sys_: dict, donnees: dict) -> Etat:
         {"composition": donnees.get("composition", []),
          "methodes_test": donnees.get("methodes_test", []),
          "produit": donnees.get("produit", {}),
+         "resultats": resultats["resultats"],
          "spec": spec, "dq": dq_content, "dq_ref": dq["dq_ref"]},
         gate_apres=lambda et, s: o.gate_conformite(et, s, s["artefacts"][0]))
 
@@ -171,10 +172,13 @@ def run_pipeline(etat: Etat, sys_: dict, donnees: dict) -> Etat:
         if "par_groupe" not in ana
         else all(r.get("interpretable", False) for r in ana["par_groupe"].values())
         for ana in resultats["resultats"].values())
+    sens_mi = (resultats.get("sensibilites", {}) or {}).get("A1_sensibilite_MI")
+    if sens_mi is not None:
+        concordance = 1.0 if sens_mi.get("concordante_primaire") else 0.7
+    else:
+        concordance = 1.0 if not anom.get("suspicion_manipulation") else 0.7
     ra = moteur_scores.calculer_ra(
-        hypotheses_ok=1.0,
-        concordance_sensibilite=1.0 if anom["anomalies_ref"] and not anom.get(
-            "suspicion_manipulation") else 0.7,
+        hypotheses_ok=1.0, concordance_sensibilite=concordance,
         diagnostics=1.0 if interpretables else 0.6,
         multiplicite_ok=True,
         validation_interne=0.5)                  # MVP — déclaré en limite

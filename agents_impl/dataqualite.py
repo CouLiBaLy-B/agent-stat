@@ -79,8 +79,10 @@ def fabriquer(ctx: Contexte):
                                       "gravite": "majeure"})
         coherence = 1.0 - viol / max(1, tot_cases)
 
-        # -- doublons sujets ----------------------------------------------------
-        cles = [r.get(sujet) for r in rows]
+        # -- doublons sujets (design : mesures répétées → clé composite) --------
+        cle_doublon = ([sujet, spec["var_temps"]] if spec.get("var_temps")
+                       else [sujet])
+        cles = [tuple(r.get(k) for k in cle_doublon) for r in rows]
         vus, dups = set(), 0
         for c in cles:
             dups += 1 if c in vus else 0
@@ -88,6 +90,7 @@ def fabriquer(ctx: Contexte):
         taux_doublons = dups / n if n else 0.0
         if dups:
             anomalies.append({"regle": "doublon_sujet", "nb": dups,
+                              "cle": "+".join(cle_doublon),
                               "gravite": "critique" if taux_doublons > 0.02 else "majeure"})
 
         # -- valeurs aberrantes (IQR×3, z robuste MAD) — détection seule -------

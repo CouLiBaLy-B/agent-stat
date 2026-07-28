@@ -17,6 +17,10 @@ import re
 SEUIL_METHODE_CONNUE = [
     re.compile(r"test d[' ]usage"), re.compile(r"sous contr[ôo]le"),
     re.compile(r"panel"), re.compile(r"hript"), re.compile(r"patch test"),
+    re.compile(r"physico"), re.compile(r"stabilit[ée]"),
+    re.compile(r"vieillissement"), re.compile(r"microbiolog"),
+    re.compile(r"challenge test"), re.compile(r"organoleptique"),
+    re.compile(r"spectro"), re.compile(r"chromato"),
 ]
 
 
@@ -166,6 +170,61 @@ def evaluer_donnees_requises(type_etude: str, dossier: dict) -> list[dict]:
             "; ".join(manques) if manques
             else "n, tolérance, INCI et contexte produit complets",
             "SCCS Notes of Guidance — évaluation de sécurité avant marché"))
+    if type_etude == "stabilite":
+        manques = []
+        if not dossier.get("var_temps"):
+            manques.append("variable temporelle (var_temps) absente")
+        bornes = dossier.get("bornes_acceptation", {})
+        variables = dossier.get("variables", [])
+        if not bornes:
+            manques.append("bornes d'acceptation non définies (R-ACCEPT)")
+        for var in bornes:
+            if var not in variables:
+                manques.append(f"paramètre borné '{var}' absent des données")
+        if len(set(dossier.get("points_temps", []))) < 3:
+            manques.append("moins de 3 points de mesure temporels")
+        regles.append(_regle(
+            "R-DON-02-donnees-stabilite", "KO" if manques else "OK",
+            "; ".join(manques) if manques
+            else "bornes, série temporelle ≥ 3 points et paramètres complets",
+            "bonnes pratiques stabilité (esprit ICH Q1A adapté cosmétique)"))
+    return regles
+
+
+def evaluer_stabilite(dossier: dict) -> list[dict]:
+    """R-STAB-01 : respect des bornes d'acceptation à l'échéance observée,
+    tendance et marge de sécurité (IC de prédiction)."""
+    regles = []
+    res = dossier.get("resultats") or {}
+    bornes = dossier.get("bornes_acceptation", {})
+    for aid, ana in res.items():
+        if ana.get("op_retenue") != "tendance_lineaire":
+            continue
+        r = ana.get("resultat", {})
+        if not r.get("interpretable"):
+            regles.append(_regle(f"R-STAB-01-{aid}", "INCERTAIN",
+                                 "tendance non interprétable (points insuffisants)",
+                                 "revue surveillance stabilité"))
+            continue
+        lo, hi = bornes.get(r["var"], [None, None])
+        if lo is None:
+            continue
+        moymax = r["moyenne_tmax"]
+        ic = r.get("ic95_prevision_tmax", [None, None])
+        if not (lo <= moymax <= hi):
+            statut, pourquoi = "KO", (f"moyenne à l'échéance {moymax:.3f} hors "
+                                      f"bornes [{lo} ; {hi}]")
+        elif ic[0] is not None and (ic[0] < lo or ic[1] > hi):
+            statut, pourquoi = "INCERTAIN", (
+                f"IC95 % de prédiction [{ic[0]:.3f} ; {ic[1]:.3f}] croise les "
+                f"bornes [{lo} ; {hi}] — dérive plausible avant échéance")
+        else:
+            statut, pourquoi = "OK", (
+                f"moyenne {moymax:.3f} et IC de prédiction dans [{lo} ; {hi}] "
+                f"(pente {r['pente']:+.4f}/unité temps)")
+        regles.append(_regle(f"R-STAB-01-{aid}", statut,
+                             f"{r['var']} : {pourquoi}",
+                             "bornes d'acceptation du protocole de stabilité"))
     return regles
 
 
@@ -174,6 +233,8 @@ def evaluer_dossier(ref, dossier: dict) -> dict:
         ref, dossier.get("produit", {}), dossier.get("composition", []))
     regles += evaluer_methodes(ref, dossier.get("methodes_test", []))
     regles += evaluer_donnees_requises(dossier.get("type_etude", ""), dossier)
+    if dossier.get("type_etude") == "stabilite":
+        regles += evaluer_stabilite(dossier)
     bloquantes = [r["regle"] for r in regles if r["statut"] == "KO"]
     incertaines = [r["regle"] for r in regles if r["statut"] == "INCERTAIN"]
     verdict = ("NON_CONFORME_BLOQUANT" if bloquantes else
