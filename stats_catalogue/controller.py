@@ -23,9 +23,17 @@ def empreinte(obj: Any) -> str:
 
 
 class ControleurExecution:
+    """Journal embarqué dans les artefacts = STRICTEMENT déterministe.
+
+    Les durées (métriques wall-clock, volatiles par nature) sont séparées dans
+    `durees_ms` (observabilité de l'appelant, jamais hashée) : un rejeu (reprise
+    après gate) doit reproduire le MÊME contenu adressé par SHA-256.
+    """
+
     def __init__(self, seed: int):
         self.seed = seed
         self.journal: list[dict] = []
+        self.durees_ms: dict[str, float] = {}        # observabilité hors hash
 
     def executer(self, op: Callable[..., dict], nom_op: str, version: str,
                  **params) -> dict:
@@ -38,7 +46,7 @@ class ControleurExecution:
             raise ErreurLogique(
                 f"double exécution divergente sur {nom_op} : blocage reproductibilité")
         trace = {"op": nom_op, "version": version, "sha256": h1,
-                 "duree_ms": round((time.perf_counter() - t0) * 1000, 2),
                  "seed": self.seed, "verifiee": True}
         self.journal.append(trace)
+        self.durees_ms[nom_op] = round((time.perf_counter() - t0) * 1000, 2)
         return {**r1, "_execution": trace}

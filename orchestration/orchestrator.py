@@ -15,7 +15,7 @@ from typing import Callable
 from core.audit import JournalAudit
 from core.bus import Bus
 from core.exceptions import (ErreurContrat, ErreurLogique, ErreurTechnique,
-                             GateError, PipelineBloque)
+                             GateError, GateExpire, PipelineBloque)
 from core.gates import GestionnaireGates
 from core.state import Etat, Phase, RegleBlocage
 from core.store import Artefact, StoreArtefacts
@@ -35,11 +35,13 @@ class Orchestrateur:
     def __init__(self, store: StoreArtefacts, bus: Bus, audit: JournalAudit,
                  gates: GestionnaireGates, registry: dict[str, AgentFn],
                  checkpoints_dir: str = "runtime/checkpoints",
-                 backoff_base_s: float = 30.0):
+                 backoff_base_s: float = 30.0,
+                 exports_gates_dir: str | None = None):
         self.store, self.bus, self.audit = store, bus, audit
         self.gates, self.agents = gates, registry
         self.checkpoints_dir = checkpoints_dir
         self.backoff_base_s = backoff_base_s
+        self.exports_gates_dir = exports_gates_dir
         self._idempotence: set[str] = set()
 
     # ---------------------------------------------------------------- exécution
@@ -97,11 +99,40 @@ class Orchestrateur:
     def gate_humain(self, etat: Etat, gate_id: str, artefact: Artefact,
                     sla_h: int = 72) -> dict:
         try:
-            return self.gates.attendre_decision(gate_id, artefact.ref, sla_h=sla_h)
+            return self.gates.attendre_decision(gate_id, artefact.ref,
+                                                sla_h=sla_h)
+        except GateExpire as e:
+            chemin = self._exporter_dossier_attente(etat, gate_id, artefact,
+                                                    sla_h)
+            suffixe = (f" — dossier de preuves exporté : {chemin}. Signature : "
+                       f"python3 -m ui_gates.cli sign ..." if chemin else "")
+            self.bloquer(etat, RegleBlocage.GATE_HUMAIN_NON_VALIDE,
+                         str(e) + suffixe,
+                         f"décision humaine au gate {gate_id}")
+            raise
         except GateError as e:
             self.bloquer(etat, RegleBlocage.GATE_HUMAIN_NON_VALIDE,
                          str(e), f"décision humaine au gate {gate_id}")
             raise
+
+    def _exporter_dossier_attente(self, etat: Etat, gate_id: str,
+                                  artefact: Artefact, sla_h: int) -> str | None:
+        """À l'ouverture d'un gate sans décision : exporte la vue preuves +
+        scores (best-effort, jamais masquée) pour le validateur humain."""
+        if not self.exports_gates_dir:
+            return None
+        try:
+            from ui_gates.dossier import exporter
+            p_md, _ = exporter(self.store, self.exports_gates_dir, etat,
+                               gate_id, artefact, sla_h,
+                               self.gates.regles_roles.get(gate_id, []))
+            self.audit.log("orchestrateur", f"DOSSIER_GATE_EXPORTE:{gate_id}",
+                           {"chemin": str(p_md), "artefact": artefact.ref})
+            return str(p_md)
+        except Exception as e:  # l'export ne doit JAMAIS masquer l'attente
+            self.audit.log("orchestrateur", "DOSSIER_GATE_ECHEC",
+                           {"gate": gate_id, "erreur": str(e)[:200]})
+            return None
 
     def gate_g2_data_quality(self, etat: Etat, dq_payload: dict) -> None:
         score = dq_payload["score_dq"]
@@ -167,6 +198,10 @@ class Orchestrateur:
         self.audit.log("orchestrateur", "BLOCAGE",
                        {"regle": regle.value, "motif": motif,
                         "debloqueur": debloqueur})
+        try:  # état bloqué persistant → consommé par ui_gates status/resume
+            etat.checkpoint(self.checkpoints_dir, "BLOQUE")
+        except Exception:
+            pass
         raise PipelineBloque(etat, regle, motif)
 
     # ---------------------------------------------------------------- interne

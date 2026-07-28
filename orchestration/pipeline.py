@@ -44,11 +44,14 @@ ALLERS_RETOURS_MAX = 2
 
 
 def construire_systeme(racine_runtime: str, decisions_path: str,
-                       backoff_base_s: float = 0.0, llm="env"):
+                       backoff_base_s: float = 0.0, llm="env",
+                       exports_gates: str | None = "auto"):
     """Assemble l'environnement d'exécution (MVP : fichiers locaux).
 
     `llm` : provider injecté, None (forcé off), ou "env" — résolu via
     `AGENT_STAT_LLM_MODE ∈ {off, llm-simule, http}` (cf. docs/LLM_INTEGRATION.md).
+    `exports_gates` : dossier d'export des dossiers de preuves de gates
+    ("auto" → <racine>/exports/gates ; None → désactivé).
     """
     racine = Path(racine_runtime)
     store = StoreArtefacts(racine / "store")
@@ -85,7 +88,10 @@ def construire_systeme(racine_runtime: str, decisions_path: str,
     }
     orch = Orchestrateur(store, bus, audit, gates, registry,
                          checkpoints_dir=ctx.checkpoints_dir,
-                         backoff_base_s=backoff_base_s)
+                         backoff_base_s=backoff_base_s,
+                         exports_gates_dir=(
+                             str(racine / "exports" / "gates")
+                             if exports_gates == "auto" else exports_gates))
     return {"store": store, "audit": audit, "bus": bus,
             "orchestrateur": orch, "ctx": ctx, "racine": racine}
 

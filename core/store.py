@@ -47,11 +47,16 @@ class StoreArtefacts:
                 statut: str = "PROPOSED") -> Artefact:
         cle = f"{type_}/{study_id}/{name}"
         meta = self._index.get(cle)
-        if meta and meta.get("statut") == "VALIDATED":
-            pass  # une nouvelle version est autorisée ; l'ancienne reste en place
+        digest = hashlib.sha256(contenu).hexdigest()
+        # idempotence par contenu : un rejeu déterministe (reprise après gate)
+        # reproduit les MÊMES octets → l'artefact existant est renvoyé,
+        # aucune version dupliquée n'est créée.
+        if meta and digest == self._index[meta["ref"]]["sha256"]:
+            art = self.get(meta["ref"])
+            art.statut = meta.get("statut", art.statut)
+            return art
         n = (meta["version"] + 1) if meta else 1
         ref = f"art://{cle}/v{n}"
-        digest = hashlib.sha256(contenu).hexdigest()
         cible = self.racine / "objets" / f"{digest}.bin"
         if not cible.exists():
             cible.write_bytes(contenu)         # adressage par contenu = immutabilité

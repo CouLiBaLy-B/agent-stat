@@ -1,0 +1,138 @@
+"""Démonstration du cycle UI des gates : attente → dossier → signature → reprise.
+
+1. Lancement SANS décisions pré-déposées : le pipeline bloque à G3 (fail-closed)
+   ET exporte automatiquement le dossier de preuves (vue scores + SAP + hash).
+2. Signature G3 via la CLI réelle (subprocess) : rôle recevable, motif, pièces.
+3. Reprise déterministe : le pipeline avance jusqu'à G6, nouvel export, même
+   signature par la CLI, reprise → TERMINE.
+4. Vérifications : store SANS versions dupliquées (idempotence par contenu),
+   chaîne d'audit intègre, signatures chaînées au journal.
+
+Exécution :  python3 demo/run_gates_ui.py
+"""
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+RACINE_REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(RACINE_REPO))
+
+from core.audit import JournalAudit                         # noqa: E402
+from core.exceptions import PipelineBloque                  # noqa: E402
+from core.state import Etat                                 # noqa: E402
+from demo.jeu_donnees import generer                        # noqa: E402
+from orchestration.pipeline import construire_systeme, run_pipeline  # noqa: E402
+from orchestration.reprise import reprendre_pipeline        # noqa: E402
+
+RUNTIME = RACINE_REPO / "runtime" / "gates"
+
+
+def _cli(*argv: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-m", "ui_gates.cli", *argv],
+        cwd=RACINE_REPO, capture_output=True, text=True)
+
+
+def main() -> int:
+    if RUNTIME.exists():
+        shutil.rmtree(RUNTIME)
+    RUNTIME.mkdir(parents=True)
+    decisions = RUNTIME / "decisions.json"
+    decisions.write_text("{}", encoding="utf-8")          # aucune décision
+    donnees = generer()
+    (RUNTIME / "donnees.json").write_text(
+        json.dumps(donnees, ensure_ascii=False), encoding="utf-8")
+
+    sys_ = construire_systeme(str(RUNTIME), str(decisions), backoff_base_s=0.0)
+    etat = Etat(run_id="run-2026-07-27-gates", study_id="COS-2026-030",
+                domaine="cosmetique", seed=20260727)
+
+    print("== 1) lancement sans décision déposée ==")
+    try:
+        run_pipeline(etat, sys_, donnees)
+        raise AssertionError("le pipeline aurait dû bloquer à G3")
+    except PipelineBloque as e:
+        etat = e.etat
+        print(f"   bloqué : {e.regle.value}")
+        p_md = RUNTIME / "exports" / "gates" / "dossier_G3.md"
+        assert p_md.exists(), "dossier G3 non exporté automatiquement"
+        texte = p_md.read_text(encoding="utf-8")
+        assert "Dossier de décision" in texte and "sha256" in texte
+        print(f"   dossier de preuves exporté ✔ ({p_md.name})")
+
+    print("== 2) tentative de signature avec un rôle non habilité ==")
+    r = _cli("sign", "--racine", str(RUNTIME), "--gate", "G3",
+             "--validateur", "u:stagiaire-9", "--role", "stagiaire",
+             "--decision", "VALIDATED", "--motif", "validation sans compétence",
+             "--pieces", "sap")
+    assert r.returncode == 2 and "non habilité" in r.stderr
+    print(f"   refus fail-closed ✔ ({r.stderr.strip()[:80]}…)")
+
+    print("== 3) signature G3 par un biostatisticien (CLI) ==")
+    r = _cli("sign", "--racine", str(RUNTIME), "--gate", "G3",
+             "--validateur", "u:bio-042", "--role", "biostatisticien",
+             "--decision", "VALIDATED",
+             "--motif", "SAP conforme ICH E9, endpoint unique, fallback pré-spécifié",
+             "--pieces", "sap", "dq_report")
+    assert r.returncode == 0, r.stderr
+    print(f"   {r.stdout.strip()}")
+
+    print("== 4) statut + reprise jusqu'au point d'attente suivant (G6) ==")
+    ckpts = sorted((RUNTIME / "checkpoints").glob("ckpt_*.json"))
+    r = _cli("status", "--racine", str(RUNTIME), "--etat", str(ckpts[-1]))
+    assert r.returncode == 0
+    print("   " + r.stdout.strip().splitlines()[2])
+    donnees_json = RUNTIME / "donnees.json"
+    # reprise dans le MÊME mode LLM que le run initial ("env") : en mode
+    # déterministe ou llm-simule (scripté), le rejeu est bit-à-bit reproductible
+    try:
+        reprendre_pipeline(etat, str(RUNTIME), str(decisions),
+                           json.loads(donnees_json.read_text("utf-8")), llm="env")
+        raise AssertionError("attente G6 attendue")
+    except PipelineBloque as e:
+        etat2 = e.etat
+        assert (RUNTIME / "exports" / "gates" / "dossier_G6.md").exists()
+        print(f"   nouvelle attente : {e.regle.value} (dossier G6 exporté ✔)")
+
+    print("== 5) signature G6 + reprise finale ==")
+    r = _cli("sign", "--racine", str(RUNTIME), "--gate", "G6",
+             "--validateur", "u:dir-007", "--role", "responsable_etude",
+             "--decision", "VALIDATED",
+             "--motif", "Résultats reproductibles, limites documentées, aucun signal",
+             "--pieces", "rapport_draft", "critique", "safety_report",
+             "compliance_report")
+    assert r.returncode == 0, r.stderr
+    etat3 = reprendre_pipeline(etat2, str(RUNTIME), str(decisions),
+                               json.loads(donnees_json.read_text("utf-8")),
+                               llm="env")
+    assert etat3.statut == "TERMINE"
+    print(f"   TERMINE ✔ scores {etat3.scores}")
+
+    print("== 6) contrôles d'intégrité ==")
+    from core.store import StoreArtefacts
+    store = StoreArtefacts(RUNTIME / "store")     # index rechargé (post-reprises)
+    refs = [store.resoudre(t, etat3.study_id, n).ref for t, n in
+            (("sap", "sap"), ("results", "results_inferential"),
+             ("report", "rapport_draft"))]
+    assert all(ref.endswith("/v1") for ref in refs), \
+        f"versions dupliquées malgré le rejeu déterministe : {refs}"
+    print("   store idempotent (toutes les refs en v1) ✔")
+    ok, n, msg = JournalAudit.verifier(RUNTIME / "audit.jsonl")
+    assert ok
+    lignes = [json.loads(l) for l in
+              (RUNTIME / "audit.jsonl").read_text("utf-8").splitlines()]
+    sig = [e for e in lignes if e["action"].startswith("GATE_DECISION_DEPOSEE")]
+    rep = [e for e in lignes if e["action"] == "REPRISE_PIPELINE"]
+    assert len(sig) == 2 and len(rep) == 2
+    print(f"   audit : {n} entrées intègres, {len(sig)} signatures chaînées, "
+          f"{len(rep)} reprises tracées ✔")
+    print("\nUI DES GATES OK ✔")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

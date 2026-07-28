@@ -20,6 +20,12 @@ def _canon(obj: dict) -> bytes:
 
 
 class JournalAudit:
+    """Une seule instance ACTIVE par fichier : la chaîne est rescellée à
+    l'ouverture ; écrire depuis une instance « ancienne » après des ajouts par
+    une autre instance casserait LE PREV_HASH (détecté par `verifier()`).
+    Pour écrire après des ajouts externes (autre processus/objet), créer une
+    NOUVELLE instance — c'est ce que fait la CLI des gates à chaque appel."""
+
     def __init__(self, chemin: str | Path):
         self.chemin = Path(chemin)
         self.chemin.parent.mkdir(parents=True, exist_ok=True)
