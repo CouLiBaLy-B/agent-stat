@@ -290,7 +290,8 @@ def test_normalite(valeurs: list[float], seed: int = 0) -> dict:
     else:
         p = math.exp(1.2937 - 5.709 * a2s + 0.0186 * a2s ** 2)
     return {"interpretable": True, "test": "anderson_darling_normalite",
-            "statistique_a2_corrige": a2s, "p_valeur": p,
+            "statistique_a2_brute": a2, "statistique_a2_corrige": a2s,
+            "p_valeur": p,
             "verdict": "normal_ok" if p >= 0.05 else "non_normal"}
 
 

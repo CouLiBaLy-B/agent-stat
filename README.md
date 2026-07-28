@@ -23,7 +23,7 @@ déterministe), documente et propose ; l'humain valide aux étapes critiques (fa
 | `reglementaire/` | Référentiel réglementaire structuré (`docs/REFERENTIEL_REGLEMENTAIRE.md`) : corpus v2 versionné+hashé (annexe II + dérogations, restrictions III–VI contextuelles, substances connues, alternatives OCDE, paramètres SCCS), normalisation INCI/synonymes, moteur de règles (KO/INCERTAIN/INFO), couverture INCI tracée |
 | `orchestration/` | Machine à états (`orchestrator.py`) : contrats vérifiés, retries bornés sur erreurs techniques uniquement, 10 règles de blocage fail-closed, verrou SAP SHA-256, registre des décisions ; câblage des 14 étapes (`pipeline.py`) ; moteur de scores RA/CC plafonnés (`scores.py`) |
 | `demo/` | Cas d'usage synthétique déterministe (`jeu_donnees.py`) + démo de bout en bout (`run_demo.py`) |
-| `tests/` | 39 tests : valeurs de référence stats, audit/tamper, gates, parcours nominal, 5 scénarios de blocage, contre-analyse relecture |
+| `tests/` | 211 tests : valeurs de référence stats, audit/tamper, gates, parcours nominal, scénarios de blocage, contre-analyse relecture, + **qualification numérique contre scipy gelé** (`tests/qualification/` — oracle généré par `scripts/qualifier_scipy.py` en venv isolé scipy 1.17.1, jamais importé au runtime ; cf. `docs/QUALIFICATION_SCIPY.md`) |
 
 ## Exécuter
 
@@ -31,7 +31,7 @@ déterministe), documente et propose ; l'humain valide aux étapes critiques (fa
 python3 demo/run_demo.py                                 # test d'usage cosmétique E2E (déterministe)
 python3 demo/run_stabilite.py                            # parcours stabilité E2E (bornes + tendances)
 AGENT_STAT_LLM_MODE=llm-simule python3 demo/run_demo.py  # même pipeline, agents LLM (simulés)
-python3 -m unittest discover -s tests                    # 86 tests
+python3 -m unittest discover -s tests                    # 211 tests
 python3 - <<'EOF'
 from core.audit import JournalAudit
 print(JournalAudit.verifier("runtime/demo/audit.jsonl"))   # (True, n, 'chaîne intègre')
