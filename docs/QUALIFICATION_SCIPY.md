@@ -153,8 +153,9 @@ Gardes intégrées :
   tests qu'aucun `nan`/`inf` n'est gelé dans l'oracle (piège réellement
   rencontré : un jeu dégénéré à variance nulle faisait rendre `nan` à
   scipy — c'est la suite de tests qui doit le dire, pas un utilisateur) ;
-- `test_meta_scipy_epinglee` et `test_grilles_non_vides` verrouillent la
-  méta et le volume attendu (15 grilles dist, 23 paquets d'ops).
+- `TestReferenceSaine` verrouille la méta épinglée et le volume attendu
+  (≥ 15 grilles dist, ≥ 15 paquets d'ops — aujourd'hui 26) ainsi que
+  l'absence de nan/inf gelés.
 
 Après toute régénération : relancer le mesurage des écarts max (recette
 du §3) ; si un écart dépasse la tolérance fixée, soit le nouveau résultat
