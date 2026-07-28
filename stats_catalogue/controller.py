@@ -38,6 +38,33 @@ class ControleurExecution:
     def executer(self, op: Callable[..., dict], nom_op: str, version: str,
                  **params) -> dict:
         t0 = time.perf_counter()
+        # UNICITÉ DE LA SORTIE EXÉCUTABLE (verrou toctou) : pour un même
+        # (run, op, entrées), la PREMIÈRE sortie est la seule possible —
+        # toute demande ultérieure est RÉ-EXÉCUTÉE puis comparée : concordance
+        # bit-à-bit ⇒ on sert la première sortie (jamais une nouvelle,
+        # `exec_rejoue` tracé) ; divergence ⇒ toctou détecté ⇒ blocage dur.
+        # Chaque première sortie porte un TICKET séquentiel monotone du run
+        # (`exec_seq`) : preuve P2 que ce sont les premières sorties.
+        if getattr(self, "_memo", None) is None:
+            self._memo = {}
+            self._seq = 0
+        clef_exec = (nom_op, empreinte(params))
+        memo = self._memo.get(clef_exec)
+        if memo is not None:
+            r3 = op(seed=self.seed, **params)
+            if empreinte(r3) != memo["_execution"]["sha256"]:
+                from core.exceptions import ErreurLogique
+                raise ErreurLogique(
+                    f"ré-exécution divergente sur {nom_op} (mêmes entrées, "
+                    "sortie différente) — toctou détecté : blocage "
+                    "reproductibilité")
+            self.durees_ms[nom_op] = round(
+                (time.perf_counter() - t0) * 1000, 2)
+            return {**memo, "_execution": {**memo["_execution"],
+                                           "exec_rejoue": True},
+                    "_copie_memoire": True}
+        self._seq += 1
+        seq = self._seq
         r1 = op(seed=self.seed, **params)
         r2 = op(seed=self.seed, **params)              # double exécution de contrôle
         h1, h2 = empreinte(r1), empreinte(r2)
@@ -46,7 +73,10 @@ class ControleurExecution:
             raise ErreurLogique(
                 f"double exécution divergente sur {nom_op} : blocage reproductibilité")
         trace = {"op": nom_op, "version": version, "sha256": h1,
-                 "seed": self.seed, "verifiee": True}
+                 "seed": self.seed, "verifiee": True, "exec_seq": seq,
+                 "ticket_unicite": True}
         self.journal.append(trace)
         self.durees_ms[nom_op] = round((time.perf_counter() - t0) * 1000, 2)
-        return {**r1, "_execution": trace}
+        sortie = {**r1, "_execution": trace}
+        self._memo[clef_exec] = dict(sortie)
+        return sortie

@@ -619,6 +619,91 @@ def km_logrank_hr(temps1: list[float], evenements1: list[int],
                         "HR > 1 = survenue plus rapide dans le groupe 1")}
 
 
+# ------------------------------------------------------- sensibilité (P1)
+
+def tendance_fenetre_glissante(points: list[dict], fenetre_mois: float,
+                               horizon_mois: float, spec_limite: float,
+                               direction: str, alpha: float = 0.05,
+                               seed: int = 0) -> dict:
+    """Sensibilité « passage au grand mail » par fenêtre glissante.
+
+    Pour chaque origine t0 observée : OLS local sur les points de
+    [t0, t0 + fenetre_mois], prévision à t0 + fenetre_mois + horizon_mois avec
+    IC95 — on consigne la PIRE borne (inf si direction="inferieur", sup si
+    "superieur") et le franchissement de `spec_limite`. Le premier mois où la
+    détection devient possible est le délai mesurable de robustesse.
+
+    Usage : stabilité / série temporelle réglementaire — modèle LOCAL
+    (extrapolation linéaire courte), à pré-déclarer au SAP ; ce n'est pas un
+    modèle mécaniste de dégradation, la lecture reste une robustesse.
+    """
+    if direction not in ("inferieur", "superieur"):
+        return {"interpretable": False, "test": "tendance_fenetre_glissante",
+                "motif": "direction ∈ {inferieur, superieur} exigée "
+                         "(sens du franchissement de seuil)"}
+    propres = sorted(((float(p["mois"]), float(p["valeur"])) for p in points),
+                     key=lambda z: z[0])
+    if len(propres) < 6 or fenetre_mois <= 0 or horizon_mois <= 0 or horizon_mois > 12:
+        return {"interpretable": False, "test": "tendance_fenetre_glissante",
+                "motif": "≥ 6 points, fenetre > 0, 0 < horizon ≤ 12 mois exigés"}
+    origines = sorted({m for m, _ in propres})
+    fenetres = []
+    for t0 in origines:
+        local = [(m, v) for m, v in propres if t0 <= m <= t0 + fenetre_mois]
+        if len(local) < 4 or len({m for m, _ in local}) < 2:
+            continue                        # fenêtre non couverte : sautée
+        t_obs = [m for m, _ in local]
+        v_obs = [v for _, v in local]
+        nn = len(local)
+        mx, my = _moy(t_obs), _moy(v_obs)
+        sxx = sum((t - mx) ** 2 for t in t_obs)
+        beta = sum((t - mx) * (v - my) for t, v in local) / sxx
+        a0 = my - beta * mx
+        residus = [v - (a0 + beta * t) for t, v in local]
+        sd_r = math.sqrt(sum(r * r for r in residus) / (nn - 2))
+        t_pred = t0 + fenetre_mois + horizon_mois
+        # extrapolation STRICTEMENT bornée : la prévision ne dépasse jamais
+        # la fin de fenêtre que de l'horizon déclaré (≤ 12 mois, garde en tête)
+        pred = a0 + beta * t_pred
+        tc = dist.t_ppf(1 - alpha / 2, nn - 2)
+        se_pr = sd_r * math.sqrt(1 / nn + (t_pred - mx) ** 2 / sxx)
+        ic_lo, ic_hi = pred - tc * se_pr, pred + tc * se_pr
+        # pire borne dans le sens du franchissement
+        borne = ic_lo if direction == "inferieur" else ic_hi
+        franchit = borne <= spec_limite if direction == "inferieur" \
+            else borne >= spec_limite
+        fenetres.append({"t0": t0, "pente": beta,
+                         "prevision": pred, "borne_pessime": borne,
+                         "demi_ic": (ic_hi - ic_lo) / 2.0,
+                         "franchit": franchit,
+                         "mois_franchissement_prevu": t0 + fenetre_mois
+                         + horizon_mois})
+    if not fenetres:
+        return {"interpretable": False, "test": "tendance_fenetre_glissante",
+                "motif": "aucune fenêtre d'au moins 4 points couverte "
+                         "par la série"}
+    franchies = [f for f in fenetres if f["franchit"]]
+    premiere = franchies[0] if franchies else None
+    return {"interpretable": True, "test": "tendance_fenetre_glissante",
+            "n_points": len(propres), "fenetre_mois": fenetre_mois,
+            "horizon_mois": horizon_mois, "spec_limite": spec_limite,
+            "direction": direction, "n_fenetres": len(fenetres),
+            "fenetres": fenetres,
+            "premier_t0_franchissement": (premiere["t0"]
+                                          if premiere else None),
+            "premier_mois_franchissement_prevu": (
+                premiere["mois_franchissement_prevu"] if premiere else None),
+            "verdict": (f"franchissement détectable dès t0="
+                        f"{premiere['t0']:g} (prévu à "
+                        f"{premiere['mois_franchissement_prevu']:g})"
+                        if premiere
+                        else "aucun franchissement de la pire borne IC95 "
+                             "sur l'horizon balayé"),
+            "hypothese": ("extrapolation LINÉAIRE LOCALE (OLS par fenêtre) — "
+                          "robustesse de détection, pas un modèle mécaniste ; "
+                          "à pré-déclarer au SAP (fenêtre, horizon, seuil)")}
+
+
 # ------------------------------------------------------- ajustement multivarié
 #
 # Régression logistique (IRLS) et Cox à risques proportionnels (Newton sur la
@@ -947,6 +1032,11 @@ OPS: dict[str, dict] = {
     "km_logrank_hr":         {"fn": km_logrank_hr,         "version": "1.0.0"},
     "regression_logistique": {"fn": regression_logistique, "version": "1.0.0"},
     "cox_ph":                {"fn": cox_ph,                "version": "1.0.0"},
+    "tendance_fenetre_glissante": {"fn": tendance_fenetre_glissante,
+                                   "version": "1.0.0"},
+    "tipping_point_mnar_smd": {"fn": lambda *a, **kw: __import__(
+        "stats_catalogue.imputation", fromlist=["tipping_point_mnar_smd"]
+    ).tipping_point_mnar_smd(*a, **kw), "version": "1.0.0"},
 }
 
 
