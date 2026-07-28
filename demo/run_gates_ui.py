@@ -2,11 +2,14 @@
 
 1. Lancement SANS décisions pré-déposées : le pipeline bloque à G3 (fail-closed)
    ET exporte automatiquement le dossier de preuves (vue scores + SAP + hash).
-2. Signature G3 via la CLI réelle (subprocess) : rôle recevable, motif, pièces.
-3. Reprise déterministe : le pipeline avance jusqu'à G6, nouvel export, même
-   signature par la CLI, reprise → TERMINE.
-4. Vérifications : store SANS versions dupliquées (idempotence par contenu),
-   chaîne d'audit intègre, signatures chaînées au journal.
+2. Signature G3 via la CLI réelle (subprocess) : rôle recevable, motif, pièces —
+   la CLI LIE la décision à la version courante (ref + sha256, preuve sig-2.0.0).
+3. Durcissement démontré en live : retouche du registre (motif modifié après
+   dépôt) → la reprise BLOQUE (empreinte ≠ recalculée) ; on restaure, ça passe.
+4. Reprise déterministe : le pipeline avance jusqu'à G6, nouvel export, même
+   signature liée par la CLI, reprise → TERMINE.
+5. Vérifications : store SANS versions dupliquées (idempotence par contenu),
+   chaîne d'audit intègre, signatures chaînées, SLA mesuré et respecté.
 
 Exécution :  python3 demo/run_gates_ui.py
 """
@@ -29,6 +32,7 @@ from orchestration.pipeline import construire_systeme, run_pipeline  # noqa: E40
 from orchestration.reprise import reprendre_pipeline        # noqa: E402
 
 RUNTIME = RACINE_REPO / "runtime" / "gates"
+CKPT_BLOQUE = RUNTIME / "checkpoints" / "ckpt_run-2026-07-27-gates_BLOQUE.json"
 
 
 def _cli(*argv: str) -> subprocess.CompletedProcess:
@@ -63,35 +67,58 @@ def main() -> int:
         texte = p_md.read_text(encoding="utf-8")
         assert "Dossier de décision" in texte and "sha256" in texte
         print(f"   dossier de preuves exporté ✔ ({p_md.name})")
+    assert CKPT_BLOQUE.exists()
 
     print("== 2) tentative de signature avec un rôle non habilité ==")
     r = _cli("sign", "--racine", str(RUNTIME), "--gate", "G3",
+             "--etat", str(CKPT_BLOQUE),
              "--validateur", "u:stagiaire-9", "--role", "stagiaire",
              "--decision", "VALIDATED", "--motif", "validation sans compétence",
              "--pieces", "sap")
     assert r.returncode == 2 and "non habilité" in r.stderr
     print(f"   refus fail-closed ✔ ({r.stderr.strip()[:80]}…)")
 
-    print("== 3) signature G3 par un biostatisticien (CLI) ==")
+    print("== 3) signature G3 par un biostatisticien (CLI, liaison auto) ==")
     r = _cli("sign", "--racine", str(RUNTIME), "--gate", "G3",
+             "--etat", str(CKPT_BLOQUE),
              "--validateur", "u:bio-042", "--role", "biostatisticien",
              "--decision", "VALIDATED",
              "--motif", "SAP conforme ICH E9, endpoint unique, fallback pré-spécifié",
              "--pieces", "sap", "dq_report")
     assert r.returncode == 0, r.stderr
-    print(f"   {r.stdout.strip()}")
+    print(f"   {r.stdout.strip().splitlines()[0]}")
+    print(f"   {r.stdout.strip().splitlines()[1].strip()}")
+    reg = json.loads(decisions.read_text(encoding="utf-8"))
+    assert reg["G3"]["artefact_sha256"] and \
+        reg["G3"]["preuve_signature"]["format"] == "sig-2.0.0"
+
+    print("== 3b) falsification du registre APRÈS dépôt → blocage ==")
+    brut_original = decisions.read_text(encoding="utf-8")
+    trafique = json.loads(brut_original)
+    # attaquant naïf : retouche le motif SANS recalculer l'empreinte sig-2.0.0
+    trafique["G3"]["motif"] = "motif retouché a posteriori (falsification)"
+    decisions.write_text(json.dumps(trafique, ensure_ascii=False),
+                         encoding="utf-8")
+    try:
+        reprendre_pipeline(etat, str(RUNTIME), str(decisions),
+                           json.loads((RUNTIME / "donnees.json")
+                                      .read_text("utf-8")), llm="env")
+        raise AssertionError("une décision falsifiée ne doit JAMAIS passer")
+    except PipelineBloque as e:
+        assert "non liée" in str(e) or "altéré" in str(e)
+        print(f"   blocage fail-closed ✔ ({str(e)[:72]}…)")
+    decisions.write_text(brut_original, encoding="utf-8")     # restauration
 
     print("== 4) statut + reprise jusqu'au point d'attente suivant (G6) ==")
-    ckpts = sorted((RUNTIME / "checkpoints").glob("ckpt_*.json"))
-    r = _cli("status", "--racine", str(RUNTIME), "--etat", str(ckpts[-1]))
+    r = _cli("status", "--racine", str(RUNTIME), "--etat", str(CKPT_BLOQUE))
     assert r.returncode == 0
     print("   " + r.stdout.strip().splitlines()[2])
-    donnees_json = RUNTIME / "donnees.json"
     # reprise dans le MÊME mode LLM que le run initial ("env") : en mode
     # déterministe ou llm-simule (scripté), le rejeu est bit-à-bit reproductible
     try:
         reprendre_pipeline(etat, str(RUNTIME), str(decisions),
-                           json.loads(donnees_json.read_text("utf-8")), llm="env")
+                           json.loads((RUNTIME / "donnees.json")
+                                      .read_text("utf-8")), llm="env")
         raise AssertionError("attente G6 attendue")
     except PipelineBloque as e:
         etat2 = e.etat
@@ -100,6 +127,7 @@ def main() -> int:
 
     print("== 5) signature G6 + reprise finale ==")
     r = _cli("sign", "--racine", str(RUNTIME), "--gate", "G6",
+             "--etat", str(CKPT_BLOQUE),
              "--validateur", "u:dir-007", "--role", "responsable_etude",
              "--decision", "VALIDATED",
              "--motif", "Résultats reproductibles, limites documentées, aucun signal",
@@ -107,7 +135,8 @@ def main() -> int:
              "compliance_report")
     assert r.returncode == 0, r.stderr
     etat3 = reprendre_pipeline(etat2, str(RUNTIME), str(decisions),
-                               json.loads(donnees_json.read_text("utf-8")),
+                               json.loads((RUNTIME / "donnees.json")
+                                          .read_text("utf-8")),
                                llm="env")
     assert etat3.statut == "TERMINE"
     print(f"   TERMINE ✔ scores {etat3.scores}")
@@ -127,9 +156,19 @@ def main() -> int:
               (RUNTIME / "audit.jsonl").read_text("utf-8").splitlines()]
     sig = [e for e in lignes if e["action"].startswith("GATE_DECISION_DEPOSEE")]
     rep = [e for e in lignes if e["action"] == "REPRISE_PIPELINE"]
-    assert len(sig) == 2 and len(rep) == 2
+    alt = [e for e in lignes if "PREUVE_ALTEREE" in e["action"]
+           or "LIAISON_INVALIDE" in e["action"]]
+    sla = [e for e in lignes if e["action"].startswith("SLA_GATE_MESURE")]
+    assert len(sig) == 2 and len(rep) >= 2
+    assert alt, "la falsification aurait dû être journalisée"
+    assert sla and all(e["details"]["dans_les_delais"] for e in sla), \
+        "SLA attendu mesuré et respecté partout"
+    attentes = {e["action"].split(":")[1]: e["details"]["attente_h"]
+                for e in sla}
     print(f"   audit : {n} entrées intègres, {len(sig)} signatures chaînées, "
           f"{len(rep)} reprises tracées ✔")
+    print(f"   falsification journalisée ✔ · SLA mesuré : "
+          + ", ".join(f"{g}={h:.4f} h" for g, h in sorted(attentes.items())))
     print("\nUI DES GATES OK ✔")
     return 0
 

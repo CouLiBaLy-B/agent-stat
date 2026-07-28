@@ -5,18 +5,24 @@ Une décision n'est écrite que si TOUS les contrôles passent :
 - rôle ∈ rôles recevables du gate ;
 - motif ≥ 10 caractères (justification réelle) ;
 - validateur identifié ; pièces consultées non vides ;
-- artefact ciblé présenté (le hash est revérifié par le validateur).
+- LIAISON OBLIGATOIRE à la version d'artefact signée : `artefact_ref` +
+  `artefact_sha256` doivent être fournis au dépôt (la CLI les résout
+  automatiquement depuis le store). Une décision non liée n'est jamais
+  écrite : on ne signe pas « un gate », on signe « CETTE version ».
 
-Écriture atomique du registre (fusion sans écraser les autres gates) +
-événement chaîné au journal d'audit. Toute violation lève RegleSignature.
+À l'écriture : preuve `sig-2.0.0` empreintée sur (gate, validateur, statut,
+motif, pièces triées, artefact_ref, artefact_sha256, horodatage) + bloc
+eIDAS réservé — cf. core/signature.py. Écriture atomique du registre
+(fusion sans écraser les autres gates) + événement chaîné au journal
+d'audit. Toute violation lève RegleSignature.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core import signature as sig
 from core.audit import JournalAudit
 
 STATUTS_RECEVABLES = ("VALIDATED", "REFUSED")
@@ -48,27 +54,34 @@ def verifier_recevabilite(decision: dict, roles_requis: list[str]) -> None:
         raise RegleSignature(
             "pieces_consultees vide — la signature exige la consultation "
             "effective des pièces du dossier")
+    if not decision.get("artefact_ref") or not decision.get("artefact_sha256"):
+        raise RegleSignature(
+            "liaison artefact_ref + artefact_sha256 manquante — une décision "
+            "n'est écrite que liée à la version exacte qu'elle valide "
+            "(la CLI la résout automatiquement depuis le store)")
 
 
 def fabriquer_signature(gate_id: str, validateur_id: str, statut: str,
-                        motif: str, pieces: list[str]) -> str:
-    """Référence de signature traçable (horodatée, antisèche de contenu)."""
-    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    empreinte = hashlib.sha256(
-        json.dumps([gate_id, validateur_id, statut, motif, sorted(pieces), ts],
-                   ensure_ascii=False).encode()).hexdigest()[:8]
-    return f"sig:{ts}:{validateur_id}:{gate_id.lower()}:{empreinte}"
+                        motif: str, pieces: list[str], artefact_ref: str,
+                        artefact_sha256: str) -> tuple[str, dict]:
+    """Retourne (référence lisible, preuve sig-2.0.0) liée à la version."""
+    preuve = sig.fabriquer_preuve(gate_id, validateur_id, statut, motif,
+                                  pieces, artefact_ref, artefact_sha256)
+    return (sig.signature_ref_depuis(preuve, gate_id, validateur_id),
+            preuve)
 
 
 def deposer_decision(decisions_path: str | Path, audit: JournalAudit,
                      gate_id: str, decision: dict,
                      roles_requis: list[str]) -> dict:
-    """Fusionne la décision dans le registre (atomique) + audit chaîné."""
+    """Fusionne la décision liée dans le registre (atomique) + audit chaîné."""
     verifier_recevabilite(decision, roles_requis)
     decision = dict(decision)
-    decision["signature_ref"] = fabriquer_signature(
-        gate_id, decision["validateur_id"], decision["statut"],
-        decision["motif"], decision["pieces_consultees"])
+    decision["signature_ref"], decision["preuve_signature"] = \
+        fabriquer_signature(
+            gate_id, decision["validateur_id"], decision["statut"],
+            decision["motif"], decision["pieces_consultees"],
+            decision["artefact_ref"], decision["artefact_sha256"])
     decision["depose_le"] = datetime.now(timezone.utc).isoformat()
 
     chemin = Path(decisions_path)
@@ -85,5 +98,8 @@ def deposer_decision(decisions_path: str | Path, audit: JournalAudit,
     audit.log(decision["validateur_id"], f"GATE_DECISION_DEPOSEE:{gate_id}", {
         "statut": decision["statut"], "role": decision["role"],
         "motif": decision["motif"], "signature": decision["signature_ref"],
+        "artefact_ref": decision["artefact_ref"],
+        "artefact_sha256": decision["artefact_sha256"],
+        "empreinte_preuve": decision["preuve_signature"]["empreinte"],
         "pieces": decision["pieces_consultees"]})
     return decision

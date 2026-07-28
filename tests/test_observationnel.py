@@ -24,7 +24,8 @@ from core.store import StoreArtefacts
 from demo.jeu_donnees import DECISIONS_OK
 from demo.jeu_observationnel import generer_cas_temoins, generer_cohorte
 from llm.provider import ProviderSimule
-from orchestration.pipeline import construire_systeme, run_pipeline
+from orchestration.pipeline import run_pipeline
+from tests.outillage import environnement
 from reglementaire.moteur_regles import evaluer_donnees_requises
 from stats_catalogue import ops
 
@@ -229,12 +230,11 @@ class TestGabaritsObservationnels(unittest.TestCase):
 # ------------------------------------------------------------------ E2E
 
 class _E2E(unittest.TestCase):
-    def _sys(self, tmp, decisions, llm=None):
-        r = Path(tmp)
-        (r / "decisions.json").write_text(
-            json.dumps(decisions, ensure_ascii=False), encoding="utf-8")
-        return construire_systeme(str(r / "rt"), str(r / "decisions.json"),
-                                  backoff_base_s=0.0, llm=llm)
+    def _sys(self, tmp, decisions, donnees, sid, llm=None):
+        # décisions LIÉES aux versions déterministes (sig-2.0.0) + système
+        return environnement(str(Path(tmp) / "rt"),
+                             Path(tmp) / "decisions.json", decisions,
+                             self._etat(sid), donnees, llm=llm)
 
     @staticmethod
     def _etat(sid):
@@ -253,7 +253,8 @@ class TestE2ECasTemoins(_E2E):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.sys_ = cls()._sys(cls.tmp.name, DECISIONS_OK)
+        cls.sys_ = cls()._sys(cls.tmp.name, DECISIONS_OK,
+                              generer_cas_temoins(), cls.SID)
         cls.etat = run_pipeline(cls()._etat(cls.SID), cls.sys_,
                                 generer_cas_temoins())
 
@@ -312,7 +313,8 @@ class TestE2ECohorte(_E2E):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.sys_ = cls()._sys(cls.tmp.name, DECISIONS_OK)
+        cls.sys_ = cls()._sys(cls.tmp.name, DECISIONS_OK,
+                              generer_cohorte(), cls.SID)
         cls.etat = run_pipeline(cls()._etat(cls.SID), cls.sys_, generer_cohorte())
 
     @classmethod
@@ -347,9 +349,9 @@ class TestE2ECohorte(_E2E):
 class TestBlocagesEtLexique(_E2E):
     def test_donnees_minimales_bloquent(self):
         with tempfile.TemporaryDirectory() as d:
-            sys_ = self._sys(d, DECISIONS_OK)
             # 36 lignes < 40 ⇒ R-DON-03 KO ⇒ blocage non-conformité
             donnees = generer_cas_temoins(n_paires=18)
+            sys_ = self._sys(d, DECISIONS_OK, donnees, "MED-CT-2026-203")
             with self.assertRaises(PipelineBloque) as ctx:
                 run_pipeline(self._etat("MED-CT-2026-203"), sys_, donnees)
             self.assertEqual(ctx.exception.regle,
@@ -360,7 +362,8 @@ class TestBlocagesEtLexique(_E2E):
         """Un rapport « falsifié » en vocabulaire causal doit lever les
         objections tournure_causale + conclusion_hors_lexique."""
         with tempfile.TemporaryDirectory() as d:
-            sys_ = self._sys(d, DECISIONS_OK)
+            sys_ = self._sys(d, DECISIONS_OK, generer_cohorte(),
+                             "MED-CO-2026-204")
             etat = run_pipeline(self._etat("MED-CO-2026-204"), sys_,
                                 generer_cohorte())
             store = sys_["store"]
@@ -386,7 +389,8 @@ class TestBlocagesEtLexique(_E2E):
         """Chemin LLM contraint (génération par schéma) — même contrat."""
         from llm.simule import provider_simule_defaut
         with tempfile.TemporaryDirectory() as d:
-            sys_ = self._sys(d, DECISIONS_OK, llm=provider_simule_defaut())
+            sys_ = self._sys(d, DECISIONS_OK, generer_cas_temoins(),
+                             "MED-CT-2026-205", llm=provider_simule_defaut())
             etat = run_pipeline(self._etat("MED-CT-2026-205"), sys_,
                                 generer_cas_temoins())
             self.assertEqual(etat.statut, "TERMINE")

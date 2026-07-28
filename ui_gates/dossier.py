@@ -39,7 +39,10 @@ PIECES_MINIMALES = {
 
 CHAMPS_EXIGES = ("statut (VALIDATED|REFUSED)", "validateur_id", "role",
                  "motif (≥ 10 caractères, justifiant la décision)",
-                 "signature_ref", "pieces_consultees (liste non vide)")
+                 "signature_ref + preuve sig-2.0.0 (empreinte recalculable)",
+                 "pieces_consultees (liste non vide)",
+                 "liaison artefact_ref + artefact_sha256 (version signée) — "
+                 "résolue automatiquement par la CLI")
 
 
 def _extraire(store: StoreArtefacts, art: Artefact) -> dict:
@@ -198,18 +201,24 @@ def rendre_markdown(dossier: dict) -> str:
         "Champs exigés de la décision :",
         *[f"- {c}" for c in dossier["consignes_fail_closed"]["champs_exiges"]],
         "",
-        "## Comment signer",
+        "## Comment signer (la CLI lie automatiquement la version ci-dessus "
+        "à la décision : ref + SHA-256 + preuve sig-2.0.0)",
         "```bash",
         f"python3 -m ui_gates.cli sign --racine <RUNTIME> \\",
+        f"    --etat <RUNTIME>/checkpoints/ckpt_{dossier['run_id']}_BLOQUE.json \\",
         f"    --gate {dossier['gate_id']} --validateur u:<id> \\",
         f"    --role <role recevable> --decision VALIDATED|REFUSED \\",
         f"    --motif \"<justification ≥ 10 caractères>\" \\",
         f"    --pieces <piece1> <piece2>",
         "```",
+        "Vérifié mécaniquement au gate (fail-closed) : décision liée à une "
+        "AUTRE version, registre retouché après dépôt, ou dépôt HORS SLA "
+        "⇒ gate bloqué, re-signature exigée. Aucune validation par défaut.",
         "Puis reprendre le pipeline bloqué :",
         "```bash",
         "python3 -m ui_gates.cli resume --racine <RUNTIME> \\",
-        "    --etat <dernier_checkpoint.json> --donnees <donnees.json>",
+        f"    --etat <RUNTIME>/checkpoints/ckpt_{dossier['run_id']}_BLOQUE.json \\",
+        "    --donnees <donnees.json>",
         "```",
         "",
     ]

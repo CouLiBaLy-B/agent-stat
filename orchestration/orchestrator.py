@@ -99,8 +99,12 @@ class Orchestrateur:
     def gate_humain(self, etat: Etat, gate_id: str, artefact: Artefact,
                     sla_h: int = 72) -> dict:
         try:
+            # La version EXACTE (ref + sha256) est présentée au gate : la
+            # décision devra y être liée (sig-2.0.0) — jamais de validation
+            # humaine réutilisable sur un autre contenu.
             return self.gates.attendre_decision(gate_id, artefact.ref,
-                                                sla_h=sla_h)
+                                                sla_h=sla_h,
+                                                artefact_sha256=artefact.sha256)
         except GateExpire as e:
             chemin = self._exporter_dossier_attente(etat, gate_id, artefact,
                                                     sla_h)

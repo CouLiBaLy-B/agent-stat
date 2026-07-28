@@ -76,17 +76,19 @@ def generer(seed: int = 20260727, n_par_groupe: int = 30,
     }
 
 
+# Gabarits de décisions de gates (substance métier UNIQUEMENT) : la liaison
+# à la version d'artefact (ref + sha256), la preuve sig-2.0.0 et l'horodatage
+# de dépôt sont calculés par `ui_gates.liaison` (pré-liaison par rejeu
+# déterministe) ou par la CLI — jamais écrits à la main ici.
 DECISIONS_OK = {
     "G3": {"statut": "VALIDATED", "validateur_id": "u:bio-042",
            "role": "biostatisticien",
            "motif": "SAP conforme aux principes ICH E9, endpoint unique, "
                     "fallback pré-spécifié.",
-           "signature_ref": "sig:2026-07-27:bio-042:g3",
            "pieces_consultees": ["sap", "dq_report"]},
     "G6": {"statut": "VALIDATED", "validateur_id": "u:dir-007",
            "role": "responsable_etude",
            "motif": "Résultats cohérents, limites documentées, aucun signal.",
-           "signature_ref": "sig:2026-07-27:dir-007:g6",
            "pieces_consultees": ["rapport_draft", "critique", "safety_report",
                                  "compliance_report"]},
 }

@@ -3,12 +3,16 @@
 Commandes :
   export  : (ré)écrit le dossier de preuves d'un gate (md + json)
   sign    : dépose une décision recevable (rôle, motif, pièces exigés)
+            LIÉE automatiquement à la version courante de l'artefact
+            (ref + sha256 résolus depuis le store via --etat) + preuve
+            sig-2.0.0 — impossible de signer sans désigner ce qu'on valide
   status  : affiche l'état du pipeline et le gate en attente
   resume  : rejoue le pipeline bloqué après signature (rejeu déterministe)
 
 Exemples :
   python3 -m ui_gates.cli status --racine runtime/obs --etat ckpt.json
   python3 -m ui_gates.cli sign --racine runtime/obs --gate G3 \
+      --etat checkpoints/ckpt_<run>_BLOQUE.json \
       --validateur u:bio-042 --role biostatisticien --decision VALIDATED \
       --motif "SAP conforme ICH E9" --pieces sap dq_report
   python3 -m ui_gates.cli resume --racine runtime/obs --etat ckpt.json \
@@ -94,24 +98,22 @@ def cmd_export(args) -> int:
 
 def cmd_sign(args) -> int:
     roles = ROLES_GATES.get(args.gate, [])
+    # LIAISON OBLIGATOIRE : la version signée est résolue depuis le store.
+    etat = _etat_depuis(args.etat)
+    store = _store(args.racine)
+    art = _resoudre_artefact_gate(store, etat.study_id, args.gate,
+                                  args.artefact)
     decision = {"statut": args.decision, "validateur_id": args.validateur,
                 "role": args.role, "motif": args.motif,
-                "pieces_consultees": args.pieces}
+                "pieces_consultees": args.pieces,
+                "artefact_ref": art.ref, "artefact_sha256": art.sha256}
     if args.interactif:
         print("== SIGNATURE INTERACTIVE (entrée vide = ABANDON, aucune "
               "validation par défaut) ==")
-        if args.etat:
-            try:
-                etat = _etat_depuis(args.etat)
-                store = _store(args.racine)
-                art = _resoudre_artefact_gate(store, etat.study_id, args.gate,
-                                              args.artefact)
-                out = str(Path(args.racine) / "exports" / "gates")
-                p_md, _ = dossier_mod.exporter(store, out, etat, args.gate,
-                                               art, args.sla, roles)
-                print(p_md.read_text(encoding="utf-8"))
-            except (ErreurUsage, KeyError) as e:
-                print(f"(dossier non régénéré : {e})")
+        out = str(Path(args.racine) / "exports" / "gates")
+        p_md, _ = dossier_mod.exporter(store, out, etat, args.gate, art,
+                                       args.sla, roles)
+        print(p_md.read_text(encoding="utf-8"))
         statut = input(f"Statut [VALIDATED/REFUSED] ({args.decision}) : ").strip() or None
         decision["statut"] = statut or args.decision
         motif = input(f"Motif (≥ 10 caractères) "
@@ -130,6 +132,8 @@ def cmd_sign(args) -> int:
         return 2
     print(f"✔ décision {ecrite['statut']} enregistrée pour {args.gate} "
           f"({ecrite['signature_ref']})")
+    print(f"  liée à {ecrite['artefact_ref']} "
+          f"sha256:{ecrite['artefact_sha256'][:16]}…")
     return 0
 
 
@@ -151,8 +155,11 @@ def cmd_status(args) -> int:
         print(f"  décisions déposées : {sorted(reg)}")
         for g in sorted(reg):
             d = reg[g]
+            liaison = (f" → {d['artefact_ref']} "
+                       f"(sha256:{str(d['artefact_sha256'])[:12]}…)"
+                       if d.get("artefact_ref") else " — NON LIÉE")
             print(f"    {g} : {d.get('statut')} par {d.get('validateur_id')} "
-                  f"(rôle {d.get('role')})")
+                  f"(rôle {d.get('role')}){liaison}")
     else:
         print("  aucune décision déposée")
     return 0
@@ -192,9 +199,13 @@ def construire_parser() -> argparse.ArgumentParser:
     e.add_argument("--out", help="dossier de sortie (défaut: exports/gates)")
     e.set_defaults(fn=cmd_export)
 
-    s = sous.add_parser("sign", help="dépose une décision de gate")
+    s = sous.add_parser("sign", help="dépose une décision de gate LIÉE à la "
+                                     "version courante de l'artefact")
     s.add_argument("--racine", required=True)
     s.add_argument("--gate", required=True, choices=sorted(ARTEFACTS_GATES))
+    s.add_argument("--etat", required=True,
+                   help="checkpoint JSON (résout l'étude et la version "
+                        "d'artefact à lier — jamais de signature aveugle)")
     s.add_argument("--validateur", required=True)
     s.add_argument("--role", required=True)
     s.add_argument("--decision", default=None,
@@ -203,7 +214,6 @@ def construire_parser() -> argparse.ArgumentParser:
     s.add_argument("--pieces", nargs="*", default=[])
     s.add_argument("--interactif", action="store_true",
                    help="affiche le dossier et demande confirmation")
-    s.add_argument("--etat", help="checkpoint JSON (pour régénérer le dossier)")
     s.add_argument("--artefact")
     s.add_argument("--sla", type=int, default=72)
     s.set_defaults(fn=cmd_sign)
@@ -228,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
     args = construire_parser().parse_args(argv)
     try:
         return args.fn(args)
-    except ErreurUsage as e:
+    except (ErreurUsage, OSError, json.JSONDecodeError, KeyError) as e:
         print(f"✘ {e}", file=sys.stderr)
         return 2
 

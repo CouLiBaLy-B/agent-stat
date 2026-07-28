@@ -21,7 +21,8 @@ from llm.provider import ProviderOpenAICompatible, ProviderSimule
 from llm.simule import (repondre_json_invalide_puis_valide,
                         repondre_toujours_invalide)
 from llm.validation import valider
-from orchestration.pipeline import construire_systeme, run_pipeline
+from orchestration.pipeline import run_pipeline
+from tests.outillage import environnement
 
 
 def _ctx(tmp: str) -> Contexte:
@@ -162,14 +163,14 @@ class TestAgentsAvecLLM(unittest.TestCase):
 
 class TestPipelineModeLLM(unittest.TestCase):
     def test_e2e_llm_simule(self):
+        """Le provider simulé (scripté) est reproductible : la pré-liaison
+        par rejeu retrouve donc les mêmes versions — chemin LLM intact."""
         with tempfile.TemporaryDirectory() as d:
             r = Path(d)
-            (r / "decisions.json").write_text(
-                json.dumps(DECISIONS_OK, ensure_ascii=False), encoding="utf-8")
             from llm.simule import provider_simule_defaut
-            sys_ = construire_systeme(str(r / "rt"), str(r / "decisions.json"),
-                                      backoff_base_s=0.0,
-                                      llm=provider_simule_defaut())
+            sys_ = environnement(str(r / "rt"), r / "decisions.json",
+                                 DECISIONS_OK, _etat(), generer(),
+                                 llm=provider_simule_defaut())
             etat = run_pipeline(_etat(), sys_, generer())
             self.assertEqual(etat.statut, "TERMINE")
             ok, _, _ = JournalAudit.verifier(r / "rt" / "audit.jsonl")

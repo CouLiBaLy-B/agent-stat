@@ -13,7 +13,8 @@ from core.exceptions import PipelineBloque
 from core.state import Etat, RegleBlocage
 from demo.jeu_donnees import DECISIONS_OK, generer
 from demo.jeu_stabilite import generer_stabilite
-from orchestration.pipeline import construire_systeme, run_pipeline
+from orchestration.pipeline import run_pipeline
+from tests.outillage import environnement
 from reglementaire.moteur_regles import evaluer_donnees_requises
 from stats_catalogue import imputation, ops
 
@@ -97,12 +98,11 @@ class TestTendanceLineaire(unittest.TestCase):
 
 
 class _E2E(unittest.TestCase):
-    def _sys(self, tmp, decisions):
-        r = Path(tmp)
-        (r / "decisions.json").write_text(
-            json.dumps(decisions, ensure_ascii=False), encoding="utf-8")
-        return construire_systeme(str(r / "rt"), str(r / "decisions.json"),
-                                  backoff_base_s=0.0)
+    def _sys(self, tmp, decisions, donnees, sid):
+        # décisions LIÉES aux versions déterministes (sig-2.0.0) + système
+        return environnement(str(Path(tmp) / "rt"),
+                             Path(tmp) / "decisions.json", decisions,
+                             self._etat(sid), donnees)
 
     @staticmethod
     def _etat(sid="COS-2026-020"):
@@ -115,10 +115,10 @@ class TestE2EMethodoP1(_E2E):
         with tempfile.TemporaryDirectory() as d:
             donnees = generer()
             donnees["spec"] = dict(donnees["spec"], marge_equivalence=8.0)
-            etat = run_pipeline(self._etat(), self._sys(d, DECISIONS_OK),
-                                donnees)
+            etat = run_pipeline(self._etat("COS-2026-020"),
+                                self._sys(d, DECISIONS_OK, donnees,
+                                          "COS-2026-020"), donnees)
             self.assertEqual(etat.statut, "TERMINE")
-            res = self._sys(d, DECISIONS_OK)  # nouvelle lecture store
             from core.store import StoreArtefacts
             st = StoreArtefacts(Path(d) / "rt" / "store")
             contenu = st.lire_json(st.resoudre(
@@ -135,7 +135,8 @@ class TestE2EMethodoP1(_E2E):
         with tempfile.TemporaryDirectory() as d:
             donnees = generer(manquants_endpoint=5)   # ~8 % manquants
             etat = run_pipeline(self._etat("COS-2026-021"),
-                                self._sys(d, DECISIONS_OK), donnees)
+                                self._sys(d, DECISIONS_OK, donnees,
+                                          "COS-2026-021"), donnees)
             self.assertEqual(etat.statut, "TERMINE")
             from core.store import StoreArtefacts
             st = StoreArtefacts(Path(d) / "rt" / "store")
@@ -150,9 +151,10 @@ class TestE2EMethodoP1(_E2E):
 
     def test_stabilite_nominale_e2e(self):
         with tempfile.TemporaryDirectory() as d:
+            donnees = generer_stabilite()
             etat = run_pipeline(self._etat("STAB-2026-004"),
-                                self._sys(d, DECISIONS_OK),
-                                generer_stabilite())
+                                self._sys(d, DECISIONS_OK, donnees,
+                                          "STAB-2026-004"), donnees)
             self.assertEqual(etat.statut, "TERMINE")
             self.assertEqual(etat.type_etude, "stabilite")
             from core.store import StoreArtefacts
@@ -170,7 +172,8 @@ class TestE2EMethodoP1(_E2E):
             donnees = generer_stabilite(derive_ph=-0.15)   # pH 12m ≈ 4,2 < 5,0
             with self.assertRaises(PipelineBloque) as ctx:
                 run_pipeline(self._etat("STAB-2026-005"),
-                             self._sys(d, DECISIONS_OK), donnees)
+                             self._sys(d, DECISIONS_OK, donnees,
+                                       "STAB-2026-005"), donnees)
             self.assertEqual(ctx.exception.regle,
                              RegleBlocage.NON_CONFORMITE_BLOQUANTE)
 

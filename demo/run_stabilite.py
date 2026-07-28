@@ -17,6 +17,7 @@ from core.state import Etat                          # noqa: E402
 from demo.jeu_donnees import DECISIONS_OK            # noqa: E402
 from demo.jeu_stabilite import generer_stabilite     # noqa: E402
 from orchestration.pipeline import construire_systeme, run_pipeline  # noqa: E402
+from ui_gates.liaison import ecrire_decisions_liees  # noqa: E402
 
 RUNTIME = RACINE_REPO / "runtime" / "stab"
 
@@ -26,14 +27,16 @@ def main() -> int:
         shutil.rmtree(RUNTIME)
     RUNTIME.mkdir(parents=True)
     decisions = RUNTIME / "decisions.json"
-    decisions.write_text(json.dumps(DECISIONS_OK, ensure_ascii=False),
-                         encoding="utf-8")
-    sys_ = construire_systeme(str(RUNTIME), str(decisions), backoff_base_s=0.0)
     etat = Etat(run_id="run-2026-07-27-0100", study_id="STAB-2026-003",
                 domaine="cosmetique", seed=20260727)
+    donnees = generer_stabilite()
+    registre = ecrire_decisions_liees(decisions, DECISIONS_OK, etat, donnees,
+                                      llm="env")
+    assert all(d.get("artefact_ref") for d in registre.values())
+    sys_ = construire_systeme(str(RUNTIME), str(decisions), backoff_base_s=0.0)
 
-    print("== Lancement du pipeline STABILITÉ ==")
-    etat = run_pipeline(etat, sys_, generer_stabilite())
+    print("== Lancement du pipeline STABILITÉ (décisions pré-liées) ==")
+    etat = run_pipeline(etat, sys_, donnees)
     print(f"Statut final        : {etat.statut} · type {etat.type_etude} "
           f"(confiance {etat.confiance_qualification})")
     print(f"Scores              : DQ={etat.scores['fiabilite_donnees']} · "

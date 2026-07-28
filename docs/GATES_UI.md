@@ -49,7 +49,12 @@ Recevabilité — **toute violation refuse l'écriture** (code 2, registre incha
 - `statut ∈ {VALIDATED, REFUSED}` (aucune autre valeur, aucun défaut) ;
 - `role ∈ ROLES_GATES[gate]` (ex. G3 : biostatisticien) ;
 - `motif ≥ 10 caractères` ; `pieces_consultees` non vide ;
-- `signature_ref` horodatée et antisèche de contenu (`sig:<ts>:u:<id>:g<n>:<hash8>`) ;
+- **liaison obligatoire** à la version signée : `artefact_ref` +
+  `artefact_sha256` sont résolus automatiquement par la CLI depuis le store
+  (`--etat`, requis) — impossible de signer sans désigner ce qu'on valide ;
+- preuve **sig-2.0.0** : `signature_ref` horodatée + empreinte recoalculable
+  liée à la version (bloc eIDAS réservé) — cf. `docs/SIGNATURE_LIAISON.md` ;
+- horodatage de dépôt `depose_le` (mesure du SLA, §3.bis) ;
 - écriture atomique (fusion, jamais d'écrasement des autres gates) ;
 - événement `GATE_DECISION_DEPOSEE:<G>` chaîné au journal (voir §5).
 
@@ -58,6 +63,7 @@ motif — **l'entrée vide = abandon**, jamais de validation par défaut.
 
 ```bash
 python3 -m ui_gates.cli sign --racine runtime/x --gate G3 \
+    --etat runtime/x/checkpoints/ckpt_<run>_BLOQUE.json \
     --validateur u:bio-042 --role biostatisticien --decision VALIDATED \
     --motif "SAP conforme ICH E9, endpoint unique, fallback pré-spécifié" \
     --pieces sap dq_report
@@ -65,6 +71,24 @@ python3 -m ui_gates.cli status --racine runtime/x --etat checkpoints/ckpt_..._BL
 python3 -m ui_gates.cli resume --racine runtime/x --etat checkpoints/ckpt_..._BLOQUE.json \
     --donnees donnees.json            # rc 0 = TERMINE · rc 3 = nouvelle attente
 ```
+
+## 3.bis Liaison version + SLA mesuré (vérifiés au gate, fail-closed)
+
+Depuis le durcissement « liaison signature ↔ hash/version »
+(`docs/SIGNATURE_LIAISON.md`), l'orchestrateur présente au gate la version
+EXACTE de l'artefact (ref + sha256) et exige :
+
+1. **décision liée** à cette version — signature obtenue sur une autre
+   version/hash ⇒ blocage (`GATE_LIAISON_INVALIDE`) ;
+2. **preuve intègre** — registre retouché après dépôt ⇒ blocage
+   (`GATE_PREUVE_ALTEREE`, empreinte recalculée ≠ empreinte stockée) ;
+3. **dépôt dans le SLA** — mesuré en temps réel depuis la première ouverture
+   du gate pour cette version (`SLA_GATE_MESURE`) ; dépôt tardif ⇒ décision
+   expirée ⇒ blocage (jamais de validation par défaut : on RE-SIGNE).
+
+Les décisions **pré-déposées** (démos/tests) passent par la **pré-liaison**
+(`ui_gates/liaison.py`) : rejeu déterministe en runtime jetable qui récolte
+les versions puis lie chaque gabarit (preuve + horodatage inclus).
 
 ## 4. Reprise (`orchestration/reprise.py`)
 
@@ -81,10 +105,9 @@ Sémantique : **rejeu déterministe complet** depuis l'ingestion avec mêmes
   les providers simulés étant scriptés).
 
 ⚠ Si le rejeu produit un contenu **différent** de celui signé (ex. LLM HTTP
-réel non déterministe), une nouvelle version est déposée : la décision du
-provider-fichier MVP n'étant pas liée à une version d'artefact, la liaison
-**signature ↔ version** est un durcissement prévu (chantier futur) — en
-production, la signature électronique portera le hash revérifié.
+réel non déterministe), une nouvelle version est déposée : la liaison
+signature ↔ version (§3.bis) ne colle alors plus ⇒ le gate **bloque** et
+ré-exporte le dossier pour une nouvelle validation. Fail-closed, voulu.
 
 Fix de reproductibilité livré avec ce chantier : les durées d'exécution
 wall-clock sont désormais **hors contenu hashé** (`durees_ms` = observabilité
@@ -102,17 +125,21 @@ ré-instancier `JournalAudit` avant toute écriture suivant des ajouts externes.
 
 ```bash
 python3 demo/run_gates_ui.py           # cycle attente→signature×2→reprise×2
-python3 -m unittest discover -s tests  # 132 tests (dont 14 du chantier)
+python3 -m unittest discover -s tests  # 147 tests
 ```
 
 La démo prouve : blocage G3 fail-closed + export auto ; refus d'une signature
-de « stagiaire » ; signatures G3/G6 chaînées ; reprises avec refs **toutes en
-v1** (idempotence) ; journal 100 % intègre.
+de « stagiaire » ; signatures G3/G6 **liées** (ref + sha256 affichés) ;
+**falsification du registre détectée** (motif retouché ⇒ blocage) ; reprises
+avec refs **toutes en v1** (idempotence) ; **SLA mesuré et respecté** ;
+journal 100 % intègre.
 
 ## 7. Ce qui reste humain et prochain chantier
 
-- Décision G3/G4/G6 : **toujours humaine, motivée, habilitée** — l'outil
-  présente les preuves, il ne suggère pas la décision.
-- Prochain chantier logique : liaison signature ↔ hash/version d'artefact
-  (durcissement du provider, préparation à une signature eIDAS) et SLA par
-  gate mesurés en temps réel.
+- Décision G3/G4/G6 : **toujours humaine, motivée, habilitée, liée à la
+  version** — l'outil présente les preuves, il ne suggère pas la décision.
+- Chantier livré : liaison signature ↔ hash/version + SLA temps réel +
+  préparation eIDAS (`docs/SIGNATURE_LIAISON.md`).
+- Prochains chantiers : branchement d'un prestataire de confiance qualifié
+  (AES/QES + horodatage qualifié, champs `eidas` déjà réservés) ; console de
+  validation web (authentification + rôles) devant la CLI.

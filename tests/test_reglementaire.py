@@ -10,7 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.exceptions import PipelineBloque
 from core.state import Etat, RegleBlocage
 from demo.jeu_donnees import DECISIONS_OK, generer
-from orchestration.pipeline import construire_systeme, run_pipeline
+from orchestration.pipeline import run_pipeline
+from tests.outillage import environnement
 from reglementaire.moteur_regles import (evaluer_composition,
                                          evaluer_donnees_requises,
                                          evaluer_dossier, evaluer_methodes)
@@ -153,12 +154,11 @@ class TestDossierComplet(unittest.TestCase):
 
 
 class TestPipelineAvecReferentiel(unittest.TestCase):
-    def _sys(self, tmp, decisions):
-        r = Path(tmp)
-        (r / "decisions.json").write_text(
-            json.dumps(decisions, ensure_ascii=False), encoding="utf-8")
-        return construire_systeme(str(r / "rt"), str(r / "decisions.json"),
-                                  backoff_base_s=0.0)
+    def _sys(self, tmp, decisions, donnees):
+        # décisions LIÉES aux versions déterministes (sig-2.0.0) + système
+        return environnement(str(Path(tmp) / "rt"),
+                             Path(tmp) / "decisions.json", decisions,
+                             self._etat(), donnees)
 
     def _etat(self):
         return Etat(run_id="run-2026-07-27-0004", study_id="COS-2026-017",
@@ -166,10 +166,9 @@ class TestPipelineAvecReferentiel(unittest.TestCase):
 
     def test_nominal_conforme_corpus_v2(self):
         with tempfile.TemporaryDirectory() as d:
-            etat = run_pipeline(self._etat(), self._sys(d, DECISIONS_OK),
-                                generer())
+            sys_ = self._sys(d, DECISIONS_OK, generer())
+            etat = run_pipeline(self._etat(), sys_, generer())
             self.assertEqual(etat.statut, "TERMINE")
-            art = self._sys(d, DECISIONS_OK)["store"]  # référence neuve inutile
             # le rapport de conformité cite le corpus
             import glob
             rapports = glob.glob(str(Path(d) / "rt" / "store" / "index.json"))
@@ -190,7 +189,8 @@ class TestPipelineAvecReferentiel(unittest.TestCase):
             donnees["composition"].append(
                 {"inci": "extrait de lichen rare", "concentration_pct": 1.0})
             with self.assertRaises(PipelineBloque) as ctx:
-                run_pipeline(self._etat(), self._sys(d, DECISIONS_OK), donnees)
+                run_pipeline(self._etat(), self._sys(d, DECISIONS_OK, donnees),
+                             donnees)
             self.assertEqual(ctx.exception.regle,
                              RegleBlocage.GATE_HUMAIN_NON_VALIDE)
 
@@ -201,11 +201,13 @@ class TestPipelineAvecReferentiel(unittest.TestCase):
                          "role": "expert_reglementaire",
                          "motif": "Lichen identifié sans restriction UE — pièce "
                                   "toxicologique archivée au dossier.",
-                         "signature_ref": "sig:2026-07-27:reg-021:g4"}
+                         "pieces_consultees": ["compliance_report",
+                                               "results_inferential"]}
             donnees = generer()
             donnees["composition"].append(
                 {"inci": "extrait de lichen rare", "concentration_pct": 1.0})
-            etat = run_pipeline(self._etat(), self._sys(d, dec), donnees)
+            etat = run_pipeline(self._etat(), self._sys(d, dec, donnees),
+                                donnees)
             self.assertEqual(etat.statut, "TERMINE")
 
 

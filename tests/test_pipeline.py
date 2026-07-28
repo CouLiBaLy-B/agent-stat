@@ -1,6 +1,10 @@
-"""Tests d'intégration du pipeline : parcours nominal + scénarios de blocage."""
+"""Tests d'intégration du pipeline : parcours nominal + scénarios de blocage.
+
+Les décisions de gates sont pré-déposées LIÉES aux versions déterministes
+(sig-2.0.0) via `tests.outillage` — la liaison est vérifiée mécaniquement
+par l'orchestrateur à chaque gate.
+"""
 import copy
-import json
 import sys
 import tempfile
 import unittest
@@ -12,15 +16,13 @@ from core.audit import JournalAudit
 from core.exceptions import PipelineBloque
 from core.state import Etat, RegleBlocage
 from demo.jeu_donnees import DECISIONS_OK, generer
-from orchestration.pipeline import construire_systeme, run_pipeline
+from orchestration.pipeline import run_pipeline
+from tests.outillage import environnement
 
 
-def _environnement(tmp: str, decisions: dict):
-    racine = Path(tmp)
-    (racine / "decisions.json").write_text(
-        json.dumps(decisions, ensure_ascii=False), encoding="utf-8")
-    return construire_systeme(str(racine / "rt"),
-                              str(racine / "decisions.json"), backoff_base_s=0.0)
+def _environnement(tmp: str, decisions: dict, donnees: dict):
+    return environnement(str(Path(tmp) / "rt"), Path(tmp) / "decisions.json",
+                         decisions, _etat(), donnees)
 
 
 def _etat() -> Etat:
@@ -32,7 +34,7 @@ class TestParcoursNominal(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.sys_ = _environnement(cls.tmp.name, DECISIONS_OK)
+        cls.sys_ = _environnement(cls.tmp.name, DECISIONS_OK, generer())
         cls.etat = run_pipeline(_etat(), cls.sys_, generer())
 
     @classmethod
@@ -86,7 +88,7 @@ class TestBlocages(unittest.TestCase):
     def test_gate_g6_absent_bloque(self):
         with tempfile.TemporaryDirectory() as d:
             dec = {k: v for k, v in DECISIONS_OK.items() if k != "G6"}
-            sys_ = _environnement(d, dec)
+            sys_ = _environnement(d, dec, generer())
             with self.assertRaises(PipelineBloque) as ctx:
                 run_pipeline(_etat(), sys_, generer())
             self.assertEqual(ctx.exception.regle,
@@ -95,8 +97,8 @@ class TestBlocages(unittest.TestCase):
 
     def test_completude_endpoint_bloque(self):
         with tempfile.TemporaryDirectory() as d:
-            sys_ = _environnement(d, DECISIONS_OK)
             donnees = generer(manquants_endpoint=10)   # 10/60 ≈ 17 % manquants
+            sys_ = _environnement(d, DECISIONS_OK, donnees)
             with self.assertRaises(PipelineBloque) as ctx:
                 run_pipeline(_etat(), sys_, donnees)
             self.assertEqual(ctx.exception.regle,
@@ -104,10 +106,10 @@ class TestBlocages(unittest.TestCase):
 
     def test_substance_interdite_bloque(self):
         with tempfile.TemporaryDirectory() as d:
-            sys_ = _environnement(d, DECISIONS_OK)
             donnees = generer()
             donnees["composition"] = list(donnees["composition"]) + [
                 {"inci": "hydroquinone", "concentration_pct": 1.0}]
+            sys_ = _environnement(d, DECISIONS_OK, donnees)
             with self.assertRaises(PipelineBloque) as ctx:
                 run_pipeline(_etat(), sys_, donnees)
             self.assertEqual(ctx.exception.regle,
@@ -115,10 +117,10 @@ class TestBlocages(unittest.TestCase):
 
     def test_signal_safety_gate_g4_requis(self):
         with tempfile.TemporaryDirectory() as d:
-            sys_ = _environnement(d, DECISIONS_OK)      # pas de décision G4
             donnees = generer()
             for r in donnees["datasets"]["rows"][:8]:   # 13 % de réactions ≥ 2
                 r["reaction_grade"] = 2
+            sys_ = _environnement(d, DECISIONS_OK, donnees)   # pas de G4
             with self.assertRaises(PipelineBloque) as ctx:
                 run_pipeline(_etat(), sys_, donnees)
             self.assertEqual(ctx.exception.regle,
@@ -132,11 +134,12 @@ class TestBlocages(unittest.TestCase):
                          "role": "toxicologue",
                          "motif": "Signal analysé : réactions irritatives réversibles, "
                                   "surveillance renforcée recommandée.",
-                         "signature_ref": "sig:2026-07-27:tox-003:g4"}
-            sys_ = _environnement(d, dec)
+                         "pieces_consultees": ["safety_report",
+                                               "results_inferential"]}
             donnees = generer()
             for r in donnees["datasets"]["rows"][:8]:
                 r["reaction_grade"] = 2
+            sys_ = _environnement(d, dec, donnees)
             etat = run_pipeline(_etat(), sys_, donnees)
             self.assertEqual(etat.statut, "TERMINE")
             self.assertTrue(etat.signaux)     # signal conservé + tracé, pas masqué
@@ -145,7 +148,7 @@ class TestBlocages(unittest.TestCase):
 class TestRelectureContreAnalyse(unittest.TestCase):
     def test_chiffre_falsifie_detecte(self):
         with tempfile.TemporaryDirectory() as d:
-            sys_ = _environnement(d, DECISIONS_OK)
+            sys_ = _environnement(d, DECISIONS_OK, generer())
             etat = run_pipeline(_etat(), sys_, generer())
             store = sys_["store"]
             ref_res = store.resoudre("results", etat.study_id,

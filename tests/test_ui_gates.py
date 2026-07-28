@@ -1,6 +1,8 @@
-"""Tests de l'UI des gates : dossiers de preuves, signature fail-closed,
-export automatique à l'attente, reprise déterministe (idempotence du store),
-reproductibilité inter-runs (métriques wall-clock hors contenu hashé)."""
+"""Tests de l'UI des gates : dossiers de preuves, signature fail-closed LIÉE
+à la version d'artefact (sig-2.0.0), export automatique à l'attente, reprise
+déterministe (idempotence du store), reproductibilité inter-runs (métriques
+wall-clock hors contenu hashé), SLA mesuré en temps réel.
+"""
 import io
 import json
 import sys
@@ -18,16 +20,15 @@ from core.store import StoreArtefacts
 from demo.jeu_donnees import DECISIONS_OK, generer
 from orchestration.pipeline import construire_systeme, run_pipeline
 from orchestration.reprise import reprendre_pipeline
+from tests.outillage import environnement
 from ui_gates import cli, dossier as dossier_mod
 from ui_gates.signature import RegleSignature, deposer_decision
 
 
-def _env(tmp: str, decisions: dict):
+def _env(tmp: str, decisions: dict, donnees: dict):
     r = Path(tmp)
-    (r / "decisions.json").write_text(
-        json.dumps(decisions, ensure_ascii=False), encoding="utf-8")
-    return construire_systeme(str(r), str(r / "decisions.json"),
-                              backoff_base_s=0.0)
+    return environnement(str(r), r / "decisions.json", decisions, _etat(),
+                         donnees)
 
 
 def _etat(sid="COS-2026-040"):
@@ -39,8 +40,9 @@ class TestDossierPreuves(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.sys_ = _env(cls.tmp.name, DECISIONS_OK)
-        cls.etat = run_pipeline(_etat(), cls.sys_, generer())
+        donnees = generer()
+        cls.sys_ = _env(cls.tmp.name, DECISIONS_OK, donnees)
+        cls.etat = run_pipeline(_etat(), cls.sys_, donnees)
         cls.store = cls.sys_["store"]
 
     @classmethod
@@ -65,6 +67,8 @@ class TestDossierPreuves(unittest.TestCase):
         self.assertIn("Dossier de décision", md)
         self.assertIn("AUCUNE validation par défaut", md)
         self.assertIn("python3 -m ui_gates.cli sign", md)
+        self.assertIn("--etat", md)          # la liaison passe par le checkpoint
+        self.assertIn("sig-2.0.0", md)
 
     def test_dossier_g6_decision_et_conformite(self):
         d = self._dossier("G6", "report", "rapport_draft")
@@ -82,10 +86,14 @@ class TestSignatureFailClosed(unittest.TestCase):
     def _audit(self, tmp):
         return JournalAudit(Path(tmp) / "a.jsonl")
 
+    # liaison présente (factice) : la recevabilité UI exige sa PRÉSENCE ;
+    # la vérification contre la version réelle a lieu au gate, pas au dépôt.
     BASE = {"statut": "VALIDATED", "validateur_id": "u:bio-1",
             "role": "biostatisticien",
             "motif": "justification suffisamment longue",
-            "pieces_consultees": ["sap"]}
+            "pieces_consultees": ["sap"],
+            "artefact_ref": "art://sap/COS-2026-040/sap/v1",
+            "artefact_sha256": "ab" * 32}
 
     def test_statut_invalide(self):
         with tempfile.TemporaryDirectory() as d:
@@ -112,14 +120,35 @@ class TestSignatureFailClosed(unittest.TestCase):
                                  {**self.BASE, "pieces_consultees": []},
                                  ["biostatisticien"])
 
-    def test_signature_produit_reference_et_audit(self):
+    def test_liaison_manquante_refusee_au_depot(self):
+        with tempfile.TemporaryDirectory() as d:
+            sans = {k: v for k, v in self.BASE.items()
+                    if k not in ("artefact_ref", "artefact_sha256")}
+            with self.assertRaisesRegex(RegleSignature, "liaison"):
+                deposer_decision(Path(d) / "dec.json", self._audit(d), "G3",
+                                 dict(sans), ["biostatisticien"])
+            sans_sha = dict(self.BASE); sans_sha["artefact_sha256"] = ""
+            with self.assertRaisesRegex(RegleSignature, "liaison"):
+                deposer_decision(Path(d) / "dec.json", self._audit(d), "G3",
+                                 sans_sha, ["biostatisticien"])
+
+    def test_signature_produit_reference_preuve_et_audit(self):
         with tempfile.TemporaryDirectory() as d:
             audit = self._audit(d)
             ecrite = deposer_decision(Path(d) / "dec.json", audit, "G3",
                                       dict(self.BASE), ["biostatisticien"])
             self.assertTrue(ecrite["signature_ref"].startswith("sig:"))
+            preuve = ecrite["preuve_signature"]
+            self.assertEqual(preuve["format"], "sig-2.0.0")
+            self.assertEqual(preuve["artefact_lie"]["ref"],
+                             self.BASE["artefact_ref"])
+            self.assertIn("eidas", preuve)
+            self.assertIsNone(preuve["eidas"]["certificat"])  # réservé
+            from core.signature import verifier_preuve
+            self.assertTrue(verifier_preuve("G3", ecrite))
             reg = json.loads((Path(d) / "dec.json").read_text("utf-8"))
             self.assertEqual(reg["G3"]["statut"], "VALIDATED")
+            self.assertTrue(reg["G3"]["depose_le"])
             ok, n, _ = JournalAudit.verifier(Path(d) / "a.jsonl")
             self.assertTrue(ok)
             self.assertEqual(n, 1)
@@ -128,10 +157,11 @@ class TestSignatureFailClosed(unittest.TestCase):
 class TestExportAutomatiqueAttente(unittest.TestCase):
     def test_dossier_exporte_au_blocage_g3(self):
         with tempfile.TemporaryDirectory() as d:
+            donnees = generer()
             dec = {k: v for k, v in DECISIONS_OK.items() if k != "G3"}
-            sys_ = _env(d, dec)
+            sys_ = _env(d, dec, donnees)
             with self.assertRaises(PipelineBloque) as ctx:
-                run_pipeline(_etat(), sys_, generer())
+                run_pipeline(_etat(), sys_, donnees)
             motif = ctx.exception.motif
             self.assertIn("dossier de preuves exporté", motif)
             p = Path(d) / "exports" / "gates" / "dossier_G3.md"
@@ -144,10 +174,10 @@ class TestExportAutomatiqueAttente(unittest.TestCase):
 
     def test_dossier_g4_signaux_exportes(self):
         with tempfile.TemporaryDirectory() as d:
-            sys_ = _env(d, DECISIONS_OK)          # pas de G4 dans DECISIONS_OK
             donnees = generer()
             for r in donnees["datasets"]["rows"][:8]:
                 r["reaction_grade"] = 2
+            sys_ = _env(d, DECISIONS_OK, donnees)       # pas de G4
             with self.assertRaises(PipelineBloque):
                 run_pipeline(_etat(), sys_, donnees)
             p = Path(d) / "exports" / "gates" / "dossier_G4.json"
@@ -157,11 +187,12 @@ class TestExportAutomatiqueAttente(unittest.TestCase):
 
     def test_refus_gate_ne_regenere_pas_dossier_mais_bloque(self):
         with tempfile.TemporaryDirectory() as d:
+            donnees = generer()
             dec = dict(DECISIONS_OK)
             dec["G3"] = {**dec["G3"], "statut": "REFUSED"}
-            sys_ = _env(d, dec)
+            sys_ = _env(d, dec, donnees)
             with self.assertRaises(PipelineBloque) as ctx:
-                run_pipeline(_etat(), sys_, generer())
+                run_pipeline(_etat(), sys_, donnees)
             self.assertEqual(ctx.exception.regle.value, "GATE_HUMAIN_NON_VALIDE")
             self.assertIn("refus", ctx.exception.motif)
 
@@ -169,15 +200,19 @@ class TestExportAutomatiqueAttente(unittest.TestCase):
 class TestCycleAttenteSignatureReprise(unittest.TestCase):
     def test_cycle_complet_et_idempotence(self):
         with tempfile.TemporaryDirectory() as d:
-            sys_ = _env(d, {})                        # aucune décision
             donnees = generer()
+            sys_ = _env(d, {}, donnees)               # aucune décision
             with self.assertRaises(PipelineBloque) as c1:
                 run_pipeline(_etat(), sys_, donnees)
             etat = c1.exception.etat
 
+            # la signature EST la version présentée : on la résout du store
+            sap = sys_["store"].resoudre("sap", etat.study_id, "sap")
             audit = sys_["audit"]
             deposer_decision(Path(d) / "decisions.json", audit, "G3",
-                             dict(TestSignatureFailClosed.BASE),
+                             {**TestSignatureFailClosed.BASE,
+                              "artefact_ref": sap.ref,
+                              "artefact_sha256": sap.sha256},
                              ["biostatisticien"])
             # reprise 1 → nouvelle attente G6 (fail-closed)
             with self.assertRaises(PipelineBloque) as c2:
@@ -188,10 +223,14 @@ class TestCycleAttenteSignatureReprise(unittest.TestCase):
 
             # la reprise a écrit depuis SA propre instance : tout nouvel
             # écrivain ré-instancie le journal (rescelle), comme la CLI
+            store = StoreArtefacts(Path(d) / "store")   # index rechargé
+            rapport = store.resoudre("report", etat.study_id, "rapport_draft")
             audit = JournalAudit(Path(d) / "audit.jsonl")
             deposer_decision(Path(d) / "decisions.json", audit, "G6",
                              {**TestSignatureFailClosed.BASE,
-                              "role": "responsable_etude"},
+                              "role": "responsable_etude",
+                              "artefact_ref": rapport.ref,
+                              "artefact_sha256": rapport.sha256},
                              ["biostatisticien", "responsable_etude",
                               "safety_assessor"])
             etat = reprendre_pipeline(etat, d, str(Path(d) / "decisions.json"),
@@ -219,8 +258,8 @@ class TestCLI(unittest.TestCase):
     def test_cli_cycle_sign_status_resume(self):
         with tempfile.TemporaryDirectory() as d:
             racine = Path(d)
-            _env(d, {})
             donnees = generer()
+            _env(d, {}, donnees)
             (racine / "donnees.json").write_text(
                 json.dumps(donnees, ensure_ascii=False), encoding="utf-8")
             with self.assertRaises(PipelineBloque) as c1:
@@ -237,14 +276,20 @@ class TestCLI(unittest.TestCase):
             self.assertIn("BLOCAGE", buf.getvalue())
 
             rc = cli.main(["sign", "--racine", str(racine), "--gate", "G3",
+                           "--etat", str(ckpt),
                            "--validateur", "u:bio-1", "--role", "biostatisticien",
                            "--decision", "VALIDATED",
                            "--motif", "SAP relu, endpoint unique et verrou OK",
                            "--pieces", "sap", "dq_report"])
             self.assertEqual(rc, 0)
+            reg = json.loads((racine / "decisions.json").read_text("utf-8"))
+            self.assertTrue(reg["G3"]["artefact_ref"]
+                            .startswith("art://sap/"))
+            self.assertEqual(len(reg["G3"]["artefact_sha256"]), 64)
 
             # rôle interdit → rc 2, registre inchangé pour G6
             rc = cli.main(["sign", "--racine", str(racine), "--gate", "G6",
+                           "--etat", str(ckpt),
                            "--validateur", "u:x", "--role", "stagiaire",
                            "--decision", "VALIDATED",
                            "--motif", "tentative non habilitée",
@@ -259,6 +304,7 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(rc, 3)          # nouvelle attente G6
 
             rc = cli.main(["sign", "--racine", str(racine), "--gate", "G6",
+                           "--etat", str(ckpt),
                            "--validateur", "u:dir-1", "--role",
                            "responsable_etude", "--decision", "VALIDATED",
                            "--motif", "rapport relu, limites et risques OK",
@@ -272,6 +318,29 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertIn("TERMINE", buf2.getvalue())
 
+    def test_cli_status_affiche_les_liaisons(self):
+        with tempfile.TemporaryDirectory() as d:
+            racine = Path(d)
+            donnees = generer()
+            _env(d, {}, donnees)
+            with self.assertRaises(PipelineBloque):
+                run_pipeline(_etat(), construire_systeme(
+                    str(racine), str(racine / "decisions.json"),
+                    backoff_base_s=0.0), donnees)
+            ckpt = sorted((racine / "checkpoints").glob("ckpt_*.json"))[-1]
+            rc = cli.main(["sign", "--racine", str(racine), "--gate", "G3",
+                           "--etat", str(ckpt),
+                           "--validateur", "u:bio-1", "--role", "biostatisticien",
+                           "--decision", "VALIDATED",
+                           "--motif", "SAP relu, endpoint unique et verrou OK",
+                           "--pieces", "sap", "dq_report"])
+            self.assertEqual(rc, 0)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                cli.main(["status", "--racine", str(racine),
+                          "--etat", str(ckpt)])
+            self.assertIn("art://sap/", buf.getvalue())   # liaison visible
+
 
 class TestReproductibiliteInterRuns(unittest.TestCase):
     def test_meme_sha256_entre_deux_runs(self):
@@ -280,8 +349,9 @@ class TestReproductibiliteInterRuns(unittest.TestCase):
         shas = []
         for _ in range(2):
             with tempfile.TemporaryDirectory() as d:
-                sys_ = _env(d, DECISIONS_OK)
-                etat = run_pipeline(_etat(), sys_, generer())
+                donnees = generer()
+                sys_ = _env(d, DECISIONS_OK, donnees)
+                etat = run_pipeline(_etat(), sys_, donnees)
                 res = sys_["store"].resoudre(
                     "results", etat.study_id, "results_inferential")
                 shas.append(res.sha256)

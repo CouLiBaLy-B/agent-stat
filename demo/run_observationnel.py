@@ -25,6 +25,7 @@ from demo.jeu_donnees import DECISIONS_OK                        # noqa: E402
 from demo.jeu_observationnel import (generer_cas_temoins,        # noqa: E402
                                      generer_cohorte)
 from orchestration.pipeline import construire_systeme, run_pipeline  # noqa: E402
+from ui_gates.liaison import ecrire_decisions_liees                  # noqa: E402
 
 RUNTIME = RACINE_REPO / "runtime" / "obs"
 
@@ -35,13 +36,16 @@ def scenario(etiquette: str, study_id: str, fabrique) -> tuple[Etat, dict]:
         shutil.rmtree(dossier)
     dossier.mkdir(parents=True)
     decisions = dossier / "decisions.json"
-    decisions.write_text(json.dumps(DECISIONS_OK, ensure_ascii=False),
-                         encoding="utf-8")
-    sys_ = construire_systeme(str(dossier), str(decisions), backoff_base_s=0.0)
     etat = Etat(run_id=f"run-2026-07-27-{etiquette}", study_id=study_id,
                 domaine="medical", seed=20260727)
-    print(f"\n== Pipeline {etiquette.upper()} : {study_id} ==")
-    etat = run_pipeline(etat, sys_, fabrique())
+    donnees = fabrique()
+    registre = ecrire_decisions_liees(decisions, DECISIONS_OK, etat, donnees,
+                                      llm="env")
+    assert all(d.get("artefact_ref") for d in registre.values())
+    sys_ = construire_systeme(str(dossier), str(decisions), backoff_base_s=0.0)
+    print(f"\n== Pipeline {etiquette.upper()} : {study_id} "
+          "(décisions pré-liées) ==")
+    etat = run_pipeline(etat, sys_, donnees)
     print(f"Statut/type     : {etat.statut} · {etat.type_etude} "
           f"(confiance {etat.confiance_qualification})")
     print(f"Scores          : DQ={etat.scores['fiabilite_donnees']} · "
