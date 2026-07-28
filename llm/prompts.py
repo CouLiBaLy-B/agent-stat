@@ -23,6 +23,13 @@ DESIGNATIONS_OPS = {
     "test_normalite": "précondition de normalité (Anderson-Darling)",
     "smd_groupes": "différence standardisée (balance baseline)",
     "mos_cosmetique": "margin of safety NOAEL/SED (seuil 100)",
+    "pooling_rubin": "pooling des estimations après imputation multiple (Rubin)",
+    "tost_equivalence": "équivalence de moyennes (TOST, marge Δ pré-définie)",
+    "tendance_lineaire": "régression y ~ temps (stabilité, IC de prévision)",
+    "odds_ratio_cas_temoins": "OR cas-témoins (Woolf + Fisher) — ASSOCIATION",
+    "or_apparie": "OR apparié 1:1 (McNemar des discordants) — ASSOCIATION",
+    "risque_relatif_cohorte": "RR cohorte (Katz) + RD (Newcombe) — ASSOCIATION",
+    "km_logrank_hr": "Kaplan-Meier + log-rang + HR (Peto) — ASSOCIATION",
 }
 
 REGLES_COMMUNES = (
@@ -71,5 +78,10 @@ def utilisateur_biostat(type_etude: str, spec: dict, dq_resume: dict) -> str:
               "contraste": spec.get("contraste", ["produit", "controle"]),
               "var_reaction": spec.get("var_reaction"),
               "resume_dq": dq_resume}
+    for cle in ("var_exposition", "var_issue", "var_evenement",
+                "var_temps_event", "var_paire", "appariement",
+                "modalite_evenement"):
+        if spec.get(cle) is not None:
+            corpus[cle] = spec[cle]
     return ("Propose les analyses du SAP (schema PROPOSITION_SAP).\n<donnees>\n"
             + json.dumps(corpus, ensure_ascii=False, indent=2) + "\n</donnees>")

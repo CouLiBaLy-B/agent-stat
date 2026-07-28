@@ -31,6 +31,64 @@ def _src(art) -> str:
     return f"(source : {art.ref} #sha256:{art.sha256[:12]}…)"
 
 
+OPS_ASSOCIATION = {"odds_ratio_cas_temoins", "or_apparie",
+                   "risque_relatif_cohorte", "km_logrank_hr"}
+
+GRANDEUR_ASSOCIATION = {"odds_ratio_cas_temoins": "l'OR",
+                        "or_apparie": "l'OR apparié",
+                        "risque_relatif_cohorte": "le RR",
+                        "km_logrank_hr": "le HR"}
+
+
+def _faits_op_association(op: str, r: dict) -> str:
+    """Ligne de FAITS sourcée pour une opération d'association — mesure
+    d'association + IC95 % + p, JAMAIS la p seule, lexique non causal."""
+    if op == "odds_ratio_cas_temoins":
+        ic = r.get("ic95_or") or [None, None]
+        corr = (" (correction de Haldane-Anscombe +0,5 déclarée)"
+                if r.get("correction_haldane_anscombe") else "")
+        return (f"OR de cas-témoins = {_fmt(r['odds_ratio'])} "
+                f"(IC95 % [{_fmt(ic[0])} ; {_fmt(ic[1])}]), "
+                f"p exacte de Fisher {_fmt_p(r.get('p_valeur'))}{corr} ; "
+                f"exposés : cas {_fmt(100 * (r.get('exposes_cas') or 0), 1)} % vs "
+                f"témoins {_fmt(100 * (r.get('exposes_temoins') or 0), 1)} %")
+    if op == "or_apparie":
+        ic = r.get("ic95_or") or [None, None]
+        corr = (" (correction +0,5 : discordance nulle d'un côté — déclarée)"
+                if r.get("correction_zero_discordant") else "")
+        return ("OR apparié conditionnel = "
+                f"{_fmt(r['odds_ratio'])} (IC95 % [{_fmt(ic[0])} ; {_fmt(ic[1])}]), "
+                f"p exacte de McNemar {_fmt_p(r.get('p_valeur'))}{corr} ; "
+                f"paires discordantes {r['paires_bc_cas_expose_temoin_non']}/"
+                f"{r['paires_cb_cas_non_temoin_expose']} sur "
+                f"{r.get('paires_appariees', 'n/d')} appariées "
+                f"({r.get('paires_concordantes', 'n/d')} concordantes)")
+    if op == "risque_relatif_cohorte":
+        ic = r.get("ic95_rr") or [None, None]
+        icd = r.get("ic95_difference_risques") or [None, None]
+        corr = (" (correction de Haldane-Anscombe +0,5 déclarée)"
+                if r.get("correction_haldane_anscombe") else "")
+        return (f"RR = {_fmt(r['risque_relatif'])} "
+                f"(IC95 % [{_fmt(ic[0])} ; {_fmt(ic[1])}]) ; "
+                f"risques : exposés {_fmt(100 * r['risque_expose'], 1)} % vs "
+                f"non-exposés {_fmt(100 * r['risque_non_expose'], 1)} % ; "
+                f"différence de risques {_fmt(100 * r['difference_risques'], 1)} "
+                f"points (IC95 % de Newcombe [{_fmt(100 * icd[0], 1)} ; "
+                f"{_fmt(100 * icd[1], 1)}]) ; "
+                f"p exacte de Fisher {_fmt_p(r.get('p_valeur'))}{corr}")
+    if op == "km_logrank_hr":
+        ic = r.get("ic95_hr") or [None, None]
+        return (f"HR (estimateur de Peto / log-rang) = {_fmt(r['hr'])} "
+                f"(IC95 % [{_fmt(ic[0])} ; {_fmt(ic[1])}]), "
+                f"p log-rang {_fmt_p(r.get('p_valeur'))} ; "
+                f"médianes de survie {_fmt(r['mediane_survie_g1'], 1)} vs "
+                f"{_fmt(r['mediane_survie_g2'], 1)} mois/ut ; "
+                f"événements {r['evenements1']}/{r['n1']} vs "
+                f"{r['evenements2']}/{r['n2']} ; risques relatifs constants "
+                "supposés (à confirmer)")
+    return ""
+
+
 def fabriquer_redaction(ctx: Contexte):
     ctx.producteur = "agent.redaction"
 
@@ -43,10 +101,38 @@ def fabriquer_redaction(ctx: Contexte):
         experimental = "randomise" in etat.type_etude
         verbe = "montre un effet" if experimental else "est associée à"
         cc = scores.get("confiance_conclusion") or 0.0
+        op1 = res.get("A1", {}).get("op_retenue", "")
 
         # ---------- FAITS ---------------------------------------------------
         faits: list[str] = []
         a1 = res.get("A1", {}).get("resultat", {})
+        # ops d'association (observationnel) : rendu dédié, par rôle
+        for aid, ana in res.items():
+            op_r = ana.get("op_retenue")
+            if op_r not in OPS_ASSOCIATION:
+                continue
+            r = ana.get("resultat", {})
+            etiqu = {"primaire": "Association primaire",
+                     "secondaire": "Association secondaire"}.get(
+                         ana.get("role"), ana.get("role", "Association"))
+            if not r.get("interpretable"):
+                faits.append(f"- {etiqu} `{aid}` ({op_r}) : non interprétable"
+                             f" — {r.get('motif')} {_src(src_res)}")
+                continue
+            faits.append(f"- {etiqu} : {_faits_op_association(op_r, r)} "
+                         f"{_src(src_res)}")
+        # prévalences descriptives (Wilson par groupe)
+        for aid, ana in res.items():
+            if ana.get("op_retenue") != "proportion_wilson":
+                continue
+            ent = ana.get("entrees", {})
+            for g, r in ana.get("par_groupe", {}).items():
+                ic = r.get("ic95") or [None, None]
+                faits.append(
+                    f"- Prévalence `{ent.get('var')}` ({g}) : "
+                    f"{r['succes']}/{r['total']} ({_fmt(100 * r['proportion'], 1)} %, "
+                    f"IC95 % de Wilson [{_fmt(100 * ic[0], 1)} ; "
+                    f"{_fmt(100 * ic[1], 1)}]) {_src(src_res)}")
         if a1.get("interpretable") and a1.get("test") == "tost_equivalence":
             ic90 = a1.get("ic90_difference") or [None, None]
             faits.append(
@@ -55,7 +141,7 @@ def fabriquer_redaction(ctx: Contexte):
                 f"(IC90 % [{_fmt(ic90[0])} ; {_fmt(ic90[1])}]), "
                 f"p_TOST {_fmt_p(a1.get('p_tost'))} → "
                 f"{a1.get('verdict', '').replace('_', ' ')} {_src(src_res)}")
-        elif a1.get("interpretable"):
+        elif a1.get("interpretable") and op1 not in OPS_ASSOCIATION:
             faits.append(
                 f"- Critère principal `{sap['endpoint_principal']['variable']}` : "
                 f"différence {_fmt(a1.get('difference'))} "
@@ -101,6 +187,36 @@ def fabriquer_redaction(ctx: Contexte):
         # ---------- INFÉRENCES ----------------------------------------------
         inferences: list[str] = []
         conclusion_directionnelle = None
+        if op1 in OPS_ASSOCIATION and a1.get("interpretable"):
+            if cc >= 0.4:
+                sig = (a1.get("p_valeur") or 1.0) < 0.05
+                grandeur = GRANDEUR_ASSOCIATION[op1]
+                marqueur = "est" if sig else "n'est PAS"
+                inferences.append(
+                    f"- Au seuil 5 %, l'exposition {marqueur} statistiquement "
+                    f"associée à l'issue ({grandeur} et son IC95 % en section "
+                    "FAITS) ; la lecture est strictement relationnelle et "
+                    "l'ampleur plausible est bornée par l'intervalle.")
+                conclusion_directionnelle = ("association_significative" if sig
+                                             else "association_non_significative")
+                if not sig:
+                    inferences.append(
+                        "- Absence de significativité ≠ absence d'association : "
+                        "l'IC95 % peut rester compatible avec des ampleurs "
+                        "cliniquement importantes (puissance).")
+            else:
+                inferences.append(
+                    "- Confiance de conclusion insuffisante (CC < 0,40) : "
+                    "aucune conclusion d'association n'est autorisée.")
+            inferences.append(
+                "- Association ≠ causalité : ce design observationnel "
+                "n'autorise aucune lecture causale (confusion non mesurée, "
+                "biais de sélection et d'information non exclus).")
+            inferences.append(
+                "- Analyse non ajustée (univariée) : l'ampleur rapportée reste "
+                "exploratoire ; tout ajustement multivarié (régression "
+                "logistique, Cox…) relève d'une décision biostatistique "
+                "pré-spécifiée au SAP (G3), jamais pilotée par les résultats.")
         if a1.get("test") == "tost_equivalence" and a1.get("interpretable"):
             ok_eq = a1.get("verdict") == "equivalence_demontree"
             inferences.append(
@@ -110,7 +226,8 @@ def fabriquer_redaction(ctx: Contexte):
                 f"unilatéraux autorise cette formulation.")
             conclusion_directionnelle = "tost_" + ("equivalence" if ok_eq
                                                    else "non_equivalence")
-        elif a1.get("interpretable") and cc >= 0.4:
+        elif (a1.get("interpretable") and cc >= 0.4
+                and op1 not in OPS_ASSOCIATION):
             sig = a1.get("p_valeur", 1.0) < 0.05
             inferences.append(
                 f"- Au seuil 5 %, la différence observée sur le critère principal "
@@ -122,7 +239,7 @@ def fabriquer_redaction(ctx: Contexte):
                     "- Absence de significativité ≠ absence d'effet : aucune "
                     "équivalence ne peut être affirmée sans test pré-spécifié (TOST).")
             conclusion_directionnelle = "significatif" if sig else "non_significatif"
-        elif a1.get("interpretable"):
+        elif a1.get("interpretable") and op1 not in OPS_ASSOCIATION:
             inferences.append("- Confiance de conclusion insuffisante (CC < 0,40) : "
                               "aucune conclusion directionnelle autorisée.")
 
@@ -151,12 +268,21 @@ def fabriquer_redaction(ctx: Contexte):
                 a1.get("verdict") == "equivalence_demontree":
             decision = ("Équivalence démontrée selon la marge pré-définie — "
                         "soumis à validation humaine G6.")
+        elif op1 in OPS_ASSOCIATION and a1.get("interpretable"):
+            sig = (a1.get("p_valeur") or 1.0) < 0.05
+            decision = ("Association statistiquement "
+                        f"{'significative' if sig else 'non significative'} "
+                        "rapportée — lecture strictement relationnelle, sans "
+                        "portée causale ni décision automatique — soumise à "
+                        "validation humaine G6.")
         else:
             decision = ("Avis favorable prudent proposé — soumis à validation "
                         "humaine G6.")
 
         limites = [f"[données] {a}" for a in e.get("dq_assumptions", [])] \
             + [f"[analyse] {a}" for a in e.get("analyse_assumptions", [])] \
+            + [f"[observationnel:{k}] {v}" for k, v in
+               (e["sap"].get("garde_fous_observationnel") or {}).items()] \
             + ["Verbalisation CC = "
                f"{scores.get('verbalisation_cc', 'n/a')} ; toute conclusion est "
                "bornée par ce score.",

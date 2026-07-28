@@ -32,6 +32,15 @@ ANALYSE_ITEM = {
                       "items": {"type": "string"}},
         "par_temps": {"type": "string"},
         "marge": {"type": "number", "minimum": 0},
+        # volet observationnel (cas-témoins / cohorte) — modalités binaires
+        # 0/1 au MVP (documenté ; strings refusées par le contrat)
+        "var_exposition": {"type": "string"},
+        "var_issue": {"type": "string"},
+        "var_evenement": {"type": "string"},
+        "var_temps_event": {"type": "string"},
+        "var_paire": {"type": "string"},
+        "modalite": {"type": "integer"},
+        "modalite_evenement": {"type": "integer"},
         "fallback": {"type": "object", "additionalProperties": False,
                      "required": ["si", "op"],
                      "properties": {

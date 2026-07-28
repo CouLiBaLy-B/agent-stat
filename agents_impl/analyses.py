@@ -267,6 +267,36 @@ def fabriquer_inferentiel(ctx: Contexte):
             return (numeriques([r for r in lignes if r.get(groupe) == g1], ana["var"]),
                     numeriques([r for r in lignes if r.get(groupe) == g2], ana["var"]))
 
+        def _modalite(var, souhaitee, defauts):
+            """Modalité présente dans les données (déterministe)."""
+            vals = sorted({r.get(var) for r in rows if r.get(var) is not None},
+                          key=str)
+            for c in ([souhaitee] if souhaitee is not None else []) + defauts:
+                if c in vals:
+                    return c
+            raise ErreurLogique(
+                f"{var!r} : modalité attendue introuvable parmi {vals!r}")
+
+        def _tab22_association(ana):
+            """Cellules 2×2 exposition × issue (cas-témoins non appariée)."""
+            expo, issue = ana["var_exposition"], ana["var_issue"]
+            cas = _modalite(issue, ana.get("modalite_cas"), ["cas", 1, True])
+            tem = _modalite(issue, ana.get("modalite_temoin"),
+                            ["temoins", "temoin", 0, False])
+            exp = _modalite(expo, ana.get("modalite_expose"),
+                            [1, True, "expose", "oui"])
+            nxp = _modalite(expo, ana.get("modalite_non_expose"),
+                            [0, False, "non_expose", "non"])
+            a = sum(1 for r in rows if r.get(issue) == cas
+                    and r.get(expo) == exp)
+            b = sum(1 for r in rows if r.get(issue) == cas
+                    and r.get(expo) == nxp)
+            c = sum(1 for r in rows if r.get(issue) == tem
+                    and r.get(expo) == exp)
+            d = sum(1 for r in rows if r.get(issue) == tem
+                    and r.get(expo) == nxp)
+            return {"a": a, "b": b, "c": c, "d": d}
+
         for ana in sap["analyses"]:
             op = verdicts.get(ana["id"], {}).get("op_retenue", ana["op"])
             if op not in catalogue.OPS:
@@ -292,6 +322,100 @@ def fabriquer_inferentiel(ctx: Contexte):
                               "var": ana["var"]}
             elif op == "descriptif_continu":
                 entrees_op = {"valeurs": numeriques(rows, ana["var"])}
+            elif op == "proportion_wilson":
+                var, par = ana["var"], ana.get("par", groupe)
+                mod = ana.get("modalite")
+                if mod is None:
+                    mod = _modalite(var, None, [1, True, "oui", "expose", "cas"])
+                sous = {}
+                for g in sorted({r.get(par) for r in rows}, key=str):
+                    xs = [r for r in rows if r.get(par) == g
+                          and r.get(var) not in (None, "")]
+                    succes = sum(1 for r in xs if r[var] == mod)
+                    sous[str(g)] = ctrl.executer(
+                        catalogue.proportion_wilson, "proportion_wilson", "1.0.0",
+                        succes=succes, total=len(xs))
+                resultats[ana["id"]] = {
+                    "op_retenue": op, "version": catalogue.OPS[op]["version"],
+                    "role": ana["role"], "par_groupe": sous,
+                    "entrees": {"var": var, "par": par, "modalite": mod}}
+                continue
+            elif op == "odds_ratio_cas_temoins":
+                entrees_op = _tab22_association(ana)
+            elif op == "or_apparie":
+                expo, issue = ana["var_exposition"], ana["var_issue"]
+                paire_v = ana["var_paire"]
+                cas = _modalite(issue, ana.get("modalite_cas"), ["cas", 1, True])
+                tem = _modalite(issue, ana.get("modalite_temoin"),
+                                ["temoins", "temoin", 0, False])
+                exp = _modalite(expo, ana.get("modalite_expose"),
+                                [1, True, "expose", "oui"])
+                nxp = _modalite(expo, ana.get("modalite_non_expose"),
+                                [0, False, "non_expose", "non"])
+                paires: dict = {}
+                for r in rows:
+                    if r.get(paire_v) is None:
+                        continue
+                    if r.get(issue) == cas:
+                        paires.setdefault(r[paire_v], {})["cas"] = r.get(expo)
+                    elif r.get(issue) == tem:
+                        paires.setdefault(r[paire_v], {})["tem"] = r.get(expo)
+                n_bc = n_cb = n_concor = n_incomplet = 0
+                for m in paires.values():
+                    ex_c, ex_t = m.get("cas"), m.get("tem")
+                    if ex_c is None or ex_t is None:
+                        n_incomplet += 1
+                    elif ex_c == exp and ex_t == nxp:
+                        n_bc += 1
+                    elif ex_c == nxp and ex_t == exp:
+                        n_cb += 1
+                    else:
+                        n_concor += 1
+                entrees_op = {"paires_b": n_bc, "paires_c": n_cb}
+                meta_apparie = {"paires_appariees": n_bc + n_cb + n_concor,
+                                "paires_concordantes": n_concor,
+                                "paires_incompletes_exclues": n_incomplet}
+            elif op == "risque_relatif_cohorte":
+                par = ana.get("par", groupe)
+                g1, g2 = ana.get("contraste") or spec.get(
+                    "contraste", ["expose", "non_expose"])
+                ev = ana["var_evenement"]
+                positif = ana.get("modalite_evenement", 1)
+                entrees_op = {
+                    "a": sum(1 for r in rows if r.get(par) == g1
+                             and r.get(ev) == positif),
+                    "b": sum(1 for r in rows if r.get(par) == g1
+                             and r.get(ev) not in (None, "") and r.get(ev) != positif),
+                    "c": sum(1 for r in rows if r.get(par) == g2
+                             and r.get(ev) == positif),
+                    "d": sum(1 for r in rows if r.get(par) == g2
+                             and r.get(ev) not in (None, "") and r.get(ev) != positif)}
+            elif op == "km_logrank_hr":
+                par = ana.get("par", groupe)
+                g1, g2 = ana.get("contraste") or spec.get(
+                    "contraste", ["expose", "non_expose"])
+                ev = ana["var_evenement"]
+                tv = ana.get("var_temps_event") or spec.get("var_temps_event")
+                if not tv:
+                    raise ErreurLogique(f"{ana['id']} : 'var_temps_event' requis")
+                positif = ana.get("modalite_evenement", 1)
+
+                def _serie(g):
+                    ts, es = [], []
+                    for r in rows:
+                        if r.get(par) != g:
+                            continue
+                        t, e = r.get(tv), r.get(ev)
+                        if t is None or e is None:
+                            continue
+                        ts.append(float(t))
+                        es.append(1 if e == positif else 0)
+                    return ts, es
+
+                t1, e1 = _serie(g1)
+                t2, e2 = _serie(g2)
+                entrees_op = {"temps1": t1, "evenements1": e1,
+                              "temps2": t2, "evenements2": e2}
             elif op == "proportion_exacte":
                 seuil = spec.get("seuil_grade_reaction", 2)
                 var, par = ana["var"], ana.get("par", groupe)
@@ -315,6 +439,8 @@ def fabriquer_inferentiel(ctx: Contexte):
                                 catalogue.OPS[op]["version"], **appel)
             if op == "tendance_lineaire" and res.get("interpretable"):
                 res["var"] = entrees_op["var"]
+            if op == "or_apparie" and res.get("interpretable"):
+                res.update(meta_apparie)
             resultats[ana["id"]] = {
                 "op_retenue": op, "version": catalogue.OPS[op]["version"],
                 "role": ana["role"], "resultat": res, "entrees": entrees_op}
@@ -323,7 +449,9 @@ def fabriquer_inferentiel(ctx: Contexte):
         sensibilites: dict = {}
         datasets = entrees.get("datasets_completes")
         a1 = next((a for a in sap["analyses"] if a.get("role") == "primaire"), None)
-        if datasets and a1 and a1["var"] == spec["endpoint_principal"]:
+        OPS_SENSIBILITE_MI = {"t_test_welch", "mann_whitney"}
+        if (datasets and a1 and a1["var"] == spec["endpoint_principal"]
+                and a1.get("op") in OPS_SENSIBILITE_MI):
             g1n, g2n = a1.get("contraste", ["produit", "controle"])
             idx = set(entrees.get("indices_imputes", []))
             estimations, par_jeu = [], []

@@ -25,13 +25,16 @@ def calculer_ra(hypotheses_ok: float, concordance_sensibilite: float,
 def calculer_cc(dq: float, ra: float, pre_enregistre: bool,
                 analyse_post_hoc: bool = False,
                 endpoint_pre_specifie: bool = True,
-                convergence_signaux: float = 1.0) -> float:
+                convergence_signaux: float = 1.0,
+                observationnel_non_ajuste: bool = False) -> float:
     facteur = (1.0 if pre_enregistre else 0.8) * convergence_signaux
     cc = min(dq, ra) * facteur
     if dq < 0.60:
         cc = min(cc, 0.40)
     if analyse_post_hoc:
         cc = min(cc, 0.50)
+    if observationnel_non_ajuste:
+        cc = min(cc, 0.60)   # association univariée : jamais confiance elevee
     if not endpoint_pre_specifie:
         cc = min(cc, 0.60)
     return round(cc, 4)

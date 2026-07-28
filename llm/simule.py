@@ -48,6 +48,11 @@ def repondre_proposition_sap(utilisateur: str, appel: int = 1) -> dict:
         "contraste": corpus.get("contraste", ["produit", "controle"]),
         "var_reaction": corpus.get("var_reaction", "reaction_grade"),
     }
+    for cle in ("var_exposition", "var_issue", "var_evenement",
+                "var_temps_event", "var_paire", "appariement",
+                "modalite_evenement"):
+        if corpus.get(cle) is not None:
+            spec_reconstruit[cle] = corpus[cle]
     fabrique = GABARITS.get(corpus.get("type_etude")) or GABARITS[
         "test_usage_controle"]
     analyses = fabrique(spec_reconstruit, {})

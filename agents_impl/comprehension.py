@@ -25,7 +25,7 @@ REGLES_QUALIFICATION: dict[str, list[tuple[str, float]]] = {
         (r"tol[ée]rance cutan[ée]e", 0.6), (r"patch", 0.3), (r"[ée]ryth[èe]me", 0.2)],
     "essai_randomise": [
         (r"randomis[ée]", 0.6), (r"essai clinique", 0.3), (r"double insu|aveugle", 0.25)],
-    "cas_temoins": [(r"cas[- ]t[ée]moins?", 0.8)],
+    "cas_temoins": [(r"cas[- ]t[ée]moins?", 0.8), (r"appari[ée]", 0.3)],
     "cohorte_prospective": [(r"cohorte", 0.4), (r"prospective", 0.4)],
     "cohorte_retrospective": [(r"cohorte", 0.4), (r"r[ée]trospective", 0.4)],
     "observationnelle_transversale": [

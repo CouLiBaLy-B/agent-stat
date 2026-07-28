@@ -435,6 +435,189 @@ def tendance_lineaire(temps: list[float], valeurs: list[float],
             "residus_sd": sd_r, "residus_max_abs": max(abs(r) for r in residus)}
 
 
+# ------------------------------------------------------------------ observationnel
+
+def _haldane(a: float, b: float, c: float, d: float):
+    """Correction de Haldane-Anscombe (+0,5 aux 4 cellules) si une cellule
+    est nulle — rend OR/RR calculables au prix d'un léger biais conservateur.
+    TOUJOURS déclarée dans la sortie de l'op appelante."""
+    if min(a, b, c, d) == 0:
+        return a + 0.5, b + 0.5, c + 0.5, d + 0.5, True
+    return float(a), float(b), float(c), float(d), False
+
+
+def odds_ratio_cas_temoins(a: int, b: int, c: int, d: int,
+                           alpha: float = 0.05, seed: int = 0) -> dict:
+    """Odds ratio d'association exposition ↔ issue (cas-témoins NON appariée).
+    a = exposés parmi les cas, b = non-exposés parmi les cas,
+    c = exposés parmi les témoins, d = non-exposés parmi les témoins ;
+    OR = (a·d)/(b·c), IC95 % de Woolf (sur log OR).
+    p : test exact de Fisher 2×2 (référence petits effectifs).
+    L'OR mesure une ASSOCIATION — jamais une causalité."""
+    if min(a, b, c, d) < 0 or a + b + c + d == 0:
+        return {"interpretable": False,
+                "motif": "comptes négatifs ou tableau vide"}
+    aa, bb, cc, dd, correction = _haldane(a, b, c, d)
+    ratio = (aa * dd) / (bb * cc)
+    log_or = math.log(ratio)
+    se = math.sqrt(1 / aa + 1 / bb + 1 / cc + 1 / dd)
+    z = dist.norm_ppf(1 - alpha / 2)
+    p = fisher_exact_2x2(a, b, c, d)["p_valeur"]
+    return {"interpretable": True, "test": "odds_ratio_cas_temoins",
+            "tableau": [[a, b], [c, d]],
+            "exposes_cas": a / (a + b) if (a + b) else None,
+            "exposes_temoins": c / (c + d) if (c + d) else None,
+            "odds_ratio": ratio, "log_or": log_or, "se_log_or": se,
+            "ic95_or": [math.exp(log_or - z * se),
+                        math.exp(log_or + z * se)],
+            "p_valeur": p, "correction_haldane_anscombe": correction,
+            "lecture": ("association (non causale) : OR > 1 = exposition plus "
+                        "fréquente chez les cas que chez les témoins")}
+
+
+def or_apparie(paires_b: int, paires_c: int, alpha: float = 0.05,
+               seed: int = 0) -> dict:
+    """OR conditionnel pour cas-témoins appariée 1:1 = b/c — seules les paires
+    DISCORDANTES informent (principe McNemar) :
+    b = paires (cas exposé, témoin non exposé) ;
+    c = paires (cas non exposé, témoin exposé).
+    p : McNemar exact sur les discordants ; IC95 % : log(b′/c′) ± z·√(1/b′+1/c′).
+    Discordance nulle d'un côté → correction +0,5 déclarée."""
+    if paires_b < 0 or paires_c < 0:
+        return {"interpretable": False, "motif": "comptes négatifs"}
+    if paires_b + paires_c == 0:
+        return {"interpretable": False,
+                "motif": "aucune paire discordante — puissance nulle"}
+    correction = paires_b == 0 or paires_c == 0
+    bb = paires_b + (0.5 if correction else 0.0)
+    cc = paires_c + (0.5 if correction else 0.0)
+    ratio = bb / cc
+    log_or = math.log(ratio)
+    se = math.sqrt(1 / bb + 1 / cc)
+    z = dist.norm_ppf(1 - alpha / 2)
+    p = mcnemar(paires_b, paires_c)["p_valeur"]
+    return {"interpretable": True, "test": "or_apparie",
+            "paires_bc_cas_expose_temoin_non": paires_b,
+            "paires_cb_cas_non_temoin_expose": paires_c,
+            "paires_discordantes": paires_b + paires_c,
+            "odds_ratio": ratio, "log_or": log_or, "se_log_or": se,
+            "ic95_or": [math.exp(log_or - z * se),
+                        math.exp(log_or + z * se)],
+            "p_valeur": p, "correction_zero_discordant": correction,
+            "lecture": ("association conditionnelle (non causale) : OR > 1 = "
+                        "exposition plus fréquente chez le cas de la paire")}
+
+
+def risque_relatif_cohorte(a: int, b: int, c: int, d: int,
+                           alpha: float = 0.05, seed: int = 0) -> dict:
+    """Risque relatif (cohorte) : RR = R1/R0 avec R1 = a/(a+b) (exposés) et
+    R0 = c/(c+d). IC95 % du RR : méthode log de Katz.
+    Différence de risques : IC95 % de Newcombe (score, méthode 10 —
+    combinaison des bornes de Wilson, sans correction de continuité).
+    p : test exact de Fisher. +0,5 Haldane-Anscombe sur le RR si cellule
+    nulle — déclarée. RR mesure une ASSOCIATION temporellement ordonnée,
+    pas une causalité."""
+    n1, n0 = a + b, c + d
+    if min(a, b, c, d) < 0 or n1 == 0 or n0 == 0:
+        return {"interpretable": False,
+                "motif": "comptes négatifs ou bras vide"}
+    r1, r0 = a / n1, c / n0
+    w1 = proportion_wilson(a, n1, alpha)["ic95"]
+    w0 = proportion_wilson(c, n0, alpha)["ic95"]
+    diff = r1 - r0
+    ic_diff = [diff - math.sqrt((r1 - w1[0]) ** 2 + (w0[1] - r0) ** 2),
+               diff + math.sqrt((w1[1] - r1) ** 2 + (r0 - w0[0]) ** 2)]
+    aa, bb, cc, dd, correction = _haldane(a, b, c, d)
+    rr = (aa / (aa + bb)) / (cc / (cc + dd))
+    log_rr = math.log(rr)
+    se = math.sqrt(1 / aa - 1 / (aa + bb) + 1 / cc - 1 / (cc + dd))
+    z = dist.norm_ppf(1 - alpha / 2)
+    p = fisher_exact_2x2(a, b, c, d)["p_valeur"]
+    return {"interpretable": True, "test": "risque_relatif_cohorte",
+            "tableau": [[a, b], [c, d]], "risque_expose": r1,
+            "risque_non_expose": r0, "risque_relatif": rr,
+            "log_rr": log_rr, "se_log_rr": se,
+            "ic95_rr": [math.exp(log_rr - z * se),
+                        math.exp(log_rr + z * se)],
+            "difference_risques": diff, "ic95_difference_risques": ic_diff,
+            "p_valeur": p, "correction_haldane_anscombe": correction,
+            "lecture": ("association (non causale) : RR > 1 = incidence plus "
+                        "élevée chez les exposés")}
+
+
+def km_logrank_hr(temps1: list[float], evenements1: list[int],
+                  temps2: list[float], evenements2: list[int],
+                  alpha: float = 0.05, seed: int = 0) -> dict:
+    """Survie à 2 groupes : Kaplan-Meier par groupe + test du log-rang (Mantel)
+    + HR estimé par résumé de Peto : log HR = (O1−E1)/V, SE = 1/√V.
+    HR > 1 ⇒ risque accru dans le groupe 1. Hypothèse de risques relatifs
+    CONSTANTS (proportionnels) — non vérifiable avec ce seul estimateur :
+    à confirmer par le biostatisticien (G3) et l'épidémiologiste (G6)."""
+    n1, n2 = len(temps1), len(temps2)
+    if (n1 < 2 or n2 < 2 or len(evenements1) != n1
+            or len(evenements2) != n2):
+        return {"interpretable": False,
+                "motif": "longueurs temps/événements incohérentes ou < 2"}
+    t1 = [float(t) for t in temps1]
+    t2 = [float(t) for t in temps2]
+    e1 = [int(e) for e in evenements1]
+    e2 = [int(e) for e in evenements2]
+    if (any(t < 0 for t in t1 + t2)
+            or any(e not in (0, 1) for e in e1 + e2)):
+        return {"interpretable": False,
+                "motif": "temps négatif ou événement hors {0,1}"}
+
+    def km(ts: list[float], es: list[int]) -> dict:
+        pts, s = [], 1.0
+        for t in sorted({x for x, e in zip(ts, es) if e == 1}):
+            risque = sum(1 for x in ts if x >= t)
+            survenus = sum(1 for x, e in zip(ts, es) if x == t and e == 1)
+            s *= 1 - survenus / risque
+            pts.append({"t": t, "survie": s})
+        med = next((p["t"] for p in pts if p["survie"] <= 0.5), None)
+        return {"points": pts, "mediane": med,
+                "survie_finale": pts[-1]["survie"] if pts else 1.0}
+
+    k1, k2 = km(t1, e1), km(t2, e2)
+    o1, o2 = sum(e1), sum(e2)
+    if o1 == 0 or o2 == 0:
+        return {"interpretable": False,
+                "motif": "un groupe sans événement — HR non estimable"}
+    e_attendu1, variance = 0.0, 0.0
+    temps_evt = sorted({t for t, e in zip(t1 + t2, e1 + e2) if e == 1})
+    for t in temps_evt:
+        r1 = sum(1 for x in t1 if x >= t)
+        r2 = sum(1 for x in t2 if x >= t)
+        d1 = sum(1 for x, e in zip(t1, e1) if x == t and e == 1)
+        d2 = sum(1 for x, e in zip(t2, e2) if x == t and e == 1)
+        r, dtot = r1 + r2, d1 + d2
+        e_attendu1 += dtot * r1 / r
+        if r > 1:
+            variance += r1 * r2 * dtot * (r - dtot) / (r * r * (r - 1))
+    if variance <= 0:
+        return {"interpretable": False, "motif": "variance log-rang nulle"}
+    ecart = o1 - e_attendu1
+    chi2 = ecart * ecart / variance
+    log_hr = ecart / variance
+    se = 1.0 / math.sqrt(variance)
+    z = dist.norm_ppf(1 - alpha / 2)
+    return {"interpretable": True, "test": "km_logrank_hr",
+            "n1": n1, "n2": n2, "evenements1": o1, "evenements2": o2,
+            "mediane_survie_g1": k1["mediane"], "mediane_survie_g2": k2["mediane"],
+            "survie_finale_g1": k1["survie_finale"],
+            "survie_finale_g2": k2["survie_finale"],
+            "O1": o1, "E1": e_attendu1, "variance_logrank": variance,
+            "chi2_logrank": chi2, "p_valeur": dist.chi2_sf(chi2, 1),
+            "hr": math.exp(log_hr), "log_hr": log_hr, "se_log_hr": se,
+            "ic95_hr": [math.exp(log_hr - z * se),
+                        math.exp(log_hr + z * se)],
+            "estimateur": "Peto (log-rank summary) — approximation documentée",
+            "hypothese": ("risques relatifs constants (proportionnels) — À "
+                          "CONFIRMER par le biostatisticien"),
+            "lecture": ("association temporellement ordonnée (non causale) : "
+                        "HR > 1 = survenue plus rapide dans le groupe 1")}
+
+
 # ------------------------------------------------------------------ registre
 
 OPS: dict[str, dict] = {
@@ -450,9 +633,13 @@ OPS: dict[str, dict] = {
     "test_normalite":        {"fn": test_normalite,       "version": "1.0.0"},
     "smd_groupes":           {"fn": smd_groupes,          "version": "1.0.0"},
     "mos_cosmetique":        {"fn": mos_cosmetique,       "version": "1.0.0"},
-    "pooling_rubin":         {"fn": pooling_rubin,        "version": "1.0.0"},
-    "tost_equivalence":      {"fn": tost_equivalence,     "version": "1.0.0"},
-    "tendance_lineaire":     {"fn": tendance_lineaire,    "version": "1.0.0"},
+    "pooling_rubin":         {"fn": pooling_rubin,         "version": "1.0.0"},
+    "tost_equivalence":      {"fn": tost_equivalence,      "version": "1.0.0"},
+    "tendance_lineaire":     {"fn": tendance_lineaire,     "version": "1.0.0"},
+    "odds_ratio_cas_temoins": {"fn": odds_ratio_cas_temoins, "version": "1.0.0"},
+    "or_apparie":            {"fn": or_apparie,            "version": "1.0.0"},
+    "risque_relatif_cohorte": {"fn": risque_relatif_cohorte, "version": "1.0.0"},
+    "km_logrank_hr":         {"fn": km_logrank_hr,         "version": "1.0.0"},
 }
 
 

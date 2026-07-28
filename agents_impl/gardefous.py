@@ -114,6 +114,12 @@ def fabriquer_conformite(ctx: Contexte):
             "var_temps": spec.get("var_temps"),
             "bornes_acceptation": spec.get("bornes_acceptation", {}),
             "points_temps": spec.get("points_temps", []),
+            "var_exposition": spec.get("var_exposition"),
+            "var_issue": spec.get("var_issue"),
+            "var_evenement": spec.get("var_evenement"),
+            "var_temps_event": spec.get("var_temps_event"),
+            "var_paire": spec.get("var_paire"),
+            "appariement": spec.get("appariement"),
             "resultats": entrees.get("resultats"),
         }
         res = evaluer_dossier(ref, dossier)
@@ -147,8 +153,13 @@ def fabriquer_conformite(ctx: Contexte):
 
 TOURNURES_CAUSALES_INTERDITES = {
     "observationnel": ["réduit", "prévient", "guérit", "soigne", "élimine",
-                       "provoque", "entraîne une amélioration"],
+                       "provoque", "entraîne une amélioration",
+                       "réduit le risque", "diminue le risque",
+                       "augmente le risque", "cause",
+                       "effet protecteur", "effet curatif",
+                       "dû à l'exposition", "grâce à l'exposition"],
 }
+TYPES_ASSOCIATION = ("cas_temoins", "cohorte", "observationnelle")
 TOLERANCE_NUM = 1e-9
 
 
@@ -192,7 +203,9 @@ def fabriquer_relecture(ctx: Contexte):
                 continue
             attendu = ana.get("resultat", {})
             appel = {k: v for k, v in ent.items()
-                     if k in ("g1", "g2", "valeurs", "temps", "marge")}
+                     if k in ("g1", "g2", "valeurs", "temps", "marge",
+                              "a", "b", "c", "d", "paires_b", "paires_c",
+                              "temps1", "evenements1", "temps2", "evenements2")}
             if not appel:
                 objection("entrees_absentes_du_recalcul", aid,
                           "l'artefact ne permet pas le recalcul indépendant")
@@ -220,6 +233,14 @@ def fabriquer_relecture(ctx: Contexte):
             if t in inf:
                 objection("tournure_causale_non_autorisee", t,
                           f"design {etat.type_etude} : lexique causal interdit")
+        # 3b) conclusion bornée au lexique d'association (types observationnels)
+        concl = rapport.get("conclusion_directionnelle")
+        if (concl and "randomise" not in etat.type_etude
+                and any(t in etat.type_etude for t in TYPES_ASSOCIATION)
+                and not concl.startswith(("association", "tost_"))):
+            objection("conclusion_hors_lexique_observationnel", concl,
+                      "les designs observationnels ne concluent qu'en termes "
+                      "d'association (labels 'association_*')")
 
         # 4) cohérence score CC / verbalisation / force de conclusion ----------
         if scores.get("verbalisation_cc") != verbaliser_cc(scores.get("confiance_conclusion")):

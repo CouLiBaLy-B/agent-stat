@@ -149,6 +149,10 @@ def evaluer_methodes(ref, methodes_test: list[str]) -> list[dict]:
     return regles
 
 
+TYPES_OBSERVATIONNELS = {"cas_temoins", "cohorte_prospective",
+                         "cohorte_retrospective"}
+
+
 def evaluer_donnees_requises(type_etude: str, dossier: dict) -> list[dict]:
     """Données minimales par type d'étude — verdict 'insuffisant' si manques."""
     regles = []
@@ -188,6 +192,39 @@ def evaluer_donnees_requises(type_etude: str, dossier: dict) -> list[dict]:
             "; ".join(manques) if manques
             else "bornes, série temporelle ≥ 3 points et paramètres complets",
             "bonnes pratiques stabilité (esprit ICH Q1A adapté cosmétique)"))
+    if type_etude in TYPES_OBSERVATIONNELS:
+        variables = dossier.get("variables", [])
+        manques = []
+        if dossier.get("var_exposition") not in variables:
+            manques.append("variable d'exposition non déclarée dans les données")
+        if type_etude == "cas_temoins":
+            if dossier.get("var_issue") not in variables:
+                manques.append("variable de statut cas/témoin non déclarée")
+            if dossier.get("appariement") \
+                    and dossier.get("var_paire") not in variables:
+                manques.append("appariement déclaré sans variable de paire")
+        else:
+            if dossier.get("var_evenement") not in variables:
+                manques.append("variable d'événement (issue) non déclarée")
+            t_ev = dossier.get("var_temps_event")
+            if t_ev and t_ev not in variables:
+                manques.append(f"temps de suivi '{t_ev}' absent des données")
+        if dossier.get("n_lignes", 0) < 40:
+            manques.append(f"n={dossier.get('n_lignes', 0)} < 40 sujets "
+                           "(puissance et stabilité des estimations)")
+        regles.append(_regle(
+            "R-DON-03-donnees-observationnel", "KO" if manques else "OK",
+            "; ".join(manques) if manques else
+            "exposition, issue et appariement/temps de suivi complet·s ; "
+            "effectif suffisant pour l'estimation non ajustée",
+            "STROBE — données minimales des études observationnelles"))
+        regles.append(_regle(
+            "R-OBS-01-lexique-association", "INFO",
+            "lexique d'association obligatoire (association ≠ causalité), "
+            "analyse non ajustée ⇒ ampleur exploratoire ; les deux sont "
+            "contrôlés mécaniquement par la relecture critique",
+            "STROBE / bonnes pratiques de vocabulaire causal",
+            severite="INFO"))
     return regles
 
 

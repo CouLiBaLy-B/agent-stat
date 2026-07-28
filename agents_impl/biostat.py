@@ -52,6 +52,67 @@ def _gabarit_observationnel(spec: dict, dq: dict) -> list[dict]:
     return _gabarit_usage_cosmetique(spec, dq)  # MVP : même trame, lexique contrôlé en aval
 
 
+def _gabarit_cas_temoins(spec: dict, dq: dict) -> list[dict]:
+    """Cas-témoins : primaire = OR (apparié conditionnel si appariement 1:1).
+    Aucun ajustement multivarié au MVP — le lexique d'association est imposé
+    par le SAP (garde_fous_observationnel) et contrôlé à la relecture."""
+    expo, issue = spec.get("var_exposition"), spec.get("var_issue")
+    if not expo or not issue:
+        raise ErreurLogique("cas-témoins : 'var_exposition' et 'var_issue' "
+                            "(statut cas/témoin) requis dans la spec")
+    analyses = [{"id": "A0a", "role": "descriptif", "op": "proportion_wilson",
+                 "var": expo, "par": issue, "modalite": 1,
+                 "note": "prévalence d'exposition par statut (descriptif)"}]
+    if spec.get("appariement"):
+        paire = spec.get("var_paire")
+        if not paire:
+            raise ErreurLogique("cas-témoins appariée : 'var_paire' requis "
+                                "(appariement 1:1 déclaré)")
+        analyses.append({"id": "A1", "role": "primaire", "op": "or_apparie",
+                         "var": expo, "var_exposition": expo,
+                         "var_issue": issue, "var_paire": paire,
+                         "note": "OR conditionnel des paires discordantes "
+                                 "(principe McNemar)"})
+    else:
+        analyses.append({"id": "A1", "role": "primaire",
+                         "op": "odds_ratio_cas_temoins", "var": expo,
+                         "var_exposition": expo, "var_issue": issue,
+                         "note": "OR de Woolf + p exacte de Fisher"})
+    return analyses
+
+
+def _gabarit_cohorte(spec: dict, dq: dict) -> list[dict]:
+    """Cohorte : primaire = HR/log-rang si temps d'événement, sinon RR.
+    Le RR de fin de suivi est conservé en secondaire descriptif."""
+    expo, ev = spec.get("var_exposition"), spec.get("var_evenement")
+    if not expo or not ev:
+        raise ErreurLogique("cohorte : 'var_exposition' et 'var_evenement' "
+                            "requis dans la spec")
+    groupe = spec.get("variable_groupe", expo)
+    contraste = spec.get("contraste", ["expose", "non_expose"])
+    analyses = [{"id": "A0a", "role": "descriptif", "op": "proportion_wilson",
+                 "var": ev, "par": groupe, "modalite": 1,
+                 "note": "incidence brute de l'événement par bras (descriptif)"}]
+    if spec.get("var_temps_event"):
+        analyses.append({"id": "A1", "role": "primaire", "op": "km_logrank_hr",
+                         "var": ev, "par": groupe, "contraste": contraste,
+                         "var_evenement": ev,
+                         "var_temps_event": spec["var_temps_event"],
+                         "note": "log-rang + HR (Peto) — risques relatifs "
+                                 "constants SUPPOSÉS, à confirmer au G3"})
+        analyses.append({"id": "A2", "role": "secondaire",
+                         "op": "risque_relatif_cohorte", "var": ev,
+                         "par": groupe, "contraste": contraste,
+                         "var_evenement": ev,
+                         "note": "RR de fin de suivi (descriptif, non ajusté)"})
+    else:
+        analyses.append({"id": "A1", "role": "primaire",
+                         "op": "risque_relatif_cohorte", "var": ev,
+                         "par": groupe, "contraste": contraste,
+                         "var_evenement": ev})
+    return analyses
+
+
 def _gabarit_stabilite(spec: dict, dq: dict) -> list[dict]:
     bornes = spec.get("bornes_acceptation", {})
     if not bornes or not spec.get("var_temps"):
@@ -68,11 +129,24 @@ GABARITS = {
     "test_usage_controle": _gabarit_usage_cosmetique,
     "tolerance_cutanee": _gabarit_usage_cosmetique,
     "observationnelle_transversale": _gabarit_observationnel,
-    "cas_temoins": _gabarit_observationnel,
+    "cas_temoins": _gabarit_cas_temoins,
+    "cohorte_prospective": _gabarit_cohorte,
+    "cohorte_retrospective": _gabarit_cohorte,
     "stabilite": _gabarit_stabilite,
 }
 
 OPS_PARAMETRIQUES = {"t_test_welch"}
+
+OPS_ASSOCIATION = {"odds_ratio_cas_temoins", "or_apparie",
+                   "risque_relatif_cohorte", "km_logrank_hr"}
+
+# Clés métier exigées par op d'association (contre-vérification déterministe)
+CLES_METIER_ASSOCIATION = {
+    "odds_ratio_cas_temoins": ["var_exposition", "var_issue"],
+    "or_apparie": ["var_exposition", "var_issue", "var_paire"],
+    "risque_relatif_cohorte": ["var_evenement"],
+    "km_logrank_hr": ["var_evenement", "var_temps_event"],
+}
 
 
 def _verifier_regles_metier(analyses: list[dict], spec: dict) -> None:
@@ -90,6 +164,12 @@ def _verifier_regles_metier(analyses: list[dict], spec: dict) -> None:
                                 "pré-spécifié")
         if a.get("fallback") and a["fallback"]["op"] not in OPS:
             raise ErreurLogique(f"{a['id']} : fallback hors catalogue")
+        for cle in CLES_METIER_ASSOCIATION.get(a["op"], []):
+            if not a.get(cle):
+                raise ErreurLogique(f"{a['id']} : {a['op']} exige {cle!r}")
+            if a[cle] not in variables:
+                raise ErreurLogique(f"{a['id']} : {cle}={a[cle]!r} absente "
+                                    "de la spec")
 
 
 def _defauts(analyses: list[dict], spec: dict) -> list[dict]:
@@ -168,6 +248,19 @@ def fabriquer(ctx: Contexte, llm=None):
                 "note": "calcul de puissance a priori exigé à G3 si confirmatoire"},
             "pre_enregistrement": "hash du SAP déposé au verrou G3 avant tout calcul",
         }
+        if etat.type_etude in ("cas_temoins", "cohorte_prospective",
+                               "cohorte_retrospective"):
+            sap["garde_fous_observationnel"] = {
+                "lexique": ("association ≠ causalité — vocabulaire causal "
+                            "interdit au rapport (contrôlé par la relecture)"),
+                "ajustement": ("analyse non ajustée (univariée) en MVP : toute "
+                               "ampleur rapportée reste exploratoire ; "
+                               "l'ajustement multivarié est une décision "
+                               "humaine (G3)"),
+                "biais": ("confusion non mesurée, biais de sélection et "
+                          "d'information à documenter en section limites"),
+                "reference": "STROBE — reporting des études observationnelles",
+            }
         art = depot(ctx, etat.study_id, "sap", "sap", sap,
                     utilisant=[entrees.get("intention_ref"),
                                entrees.get("dq_ref")])
