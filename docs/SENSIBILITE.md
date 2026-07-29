@@ -1,7 +1,8 @@
 # Analyses de sensibilité déclaratives & verrou toctou des sorties
 
-**Version :** 1.1.0 · `tipping_point_mnar_smd` 1.1.0 (marquage de
-renversement — additif, calculs invariants) · câblage pipeline des deux ops
+**Version :** 1.2.0 · `tipping_point_mnar_smd` 1.2.0 (deltas_unite
+{"sigma" (défaut), "unite"} — grille en unités cliniques natives en plus
+de σ) · marquage de renversement (1.1.0) · câblage pipeline des deux ops
 dans les gabarits SAP + schéma LLM + relecture · étend
 `stats_catalogue/ops.py`, `stats_catalogue/imputation.py`,
 `stats_catalogue/controller.py`, `agents_impl/`, `llm/schemas.py` —
@@ -91,12 +92,14 @@ L'op marque explicitement cette zone (depuis la 1.1.0) :
   renversement, pas une résurrection de l'effet observé ».
 
 **Barrières fail-closed :** m ≥ 2 copies alignées, longueurs constantes,
-grille de floats non vide, `groupe_ajuste ∈ {g1, g2}`, σ_ref non nul.
+grille de floats non vide, `groupe_ajuste ∈ {g1, g2}`, σ_ref non nul
+(ou unités natives si deltas_unite="unite").
 
 ```python
 ops.executer("tipping_point_mnar_smd", seed,
              colonnes_g1=cols1, colonnes_g2=cols2,
              deltas=[0.0, 0.1, 0.25, 0.5, 0.75, 1.0],
+             deltas_unite="sigma",   # ou "unite" pour unités cliniques
              groupe_ajuste="g2")
 ```
 
