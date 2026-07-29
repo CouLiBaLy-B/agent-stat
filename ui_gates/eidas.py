@@ -10,7 +10,8 @@ ARCHITECTURE POSTE-DE-MARCHE (comme llm/) :
   console laisse alors le bloc `eidas` à None (rétrocompatibilité des
   décisions existantes, modes démo/tests non PSCE).
 
-Résolution : `AGENT_STAT_PSCE_MODE ∈ {off, simulateur}` (défaut off).
+Résolution : `AGENT_STAT_PSCE_MODE ∈ {off, simulateur, real}` (défaut off).
+- "real" : stub qui lève PSCEIndisponible clair ; le vrai PSCQ (RSA/ECDSA qualifié + TSA RFC 3161, IdP OIDC derrière authentifier) doit implémenter **exactement** le contrat ServicePSCE (production).
 
 FAIL-CLOSED : en mode `simulateur`, un validateur SANS certificat enregistré
 ne peut pas obtenir de cachet — la console refuse le dépôt (aucune
@@ -24,7 +25,7 @@ from typing import Protocol
 
 from core import eidas as moteur
 
-MODES = ("off", "simulateur")
+MODES = ("off", "simulateur", "real")
 NIVEAU_REQUIS_GATES = {           # niveau minimum du cachet à la VALIDATION
     "G1": "AES_SIMULE", "G2": "AES_SIMULE", "G3": "AES_SIMULE",
     "G4": "AES_SIMULE", "G5": "AES_SIMULE", "G6": "AES_SIMULE",
@@ -92,13 +93,36 @@ class PSCESimulation:
 def resoudre_psce(mode: str | None = None,
                   simulateur: PSCESimulation | None = None
                   ) -> ServicePSCE | None:
-    """Factory branchée env : off → None ; simulateur → moteur simulé."""
+    """Factory branchée env : off → None ; simulateur → moteur simulé ;
+    real → stub qui exige le PSCQ réel (RSA/ECDSA + TSA RFC 3161)
+    branché derrière le MÊME contrat ServicePSCE (production).
+    """
     mode = mode if mode is not None else os.environ.get(
         "AGENT_STAT_PSCE_MODE", "off")
     if mode == "off":
         return None
     if mode == "simulateur":
         return simulateur or psce_demo()
+    if mode == "real":
+        # Stub : le vrai PSCQ (certificats qualifiés, RSA/ECDSA, RFC 3161 TSA)
+        # doit implémenter ServicePSCE. Le stub fail-closed avec message clair
+        # pour forcer le câblage production (pas de dégradation silencieuse).
+        class PSCERealStub:
+            mode = "real"
+            def certificat_du(self, validateur_id: str) -> dict:
+                raise PSCEIndisponible(
+                    "PSCQ réel (mode 'real') non câblé — "
+                    "implémentez ServicePSCE derrière RSA/ECDSA + "
+                    "TSA RFC 3161 (IdP OIDC pour l'auth) ; "
+                    "même contrat qu'en simulateur (production uniquement)")
+            def fabrique_eidas(self, validateur_id: str, empreinte: str,
+                               gate_id: str) -> dict:
+                raise PSCEIndisponible(
+                    "PSCQ réel (mode 'real') non câblé — "
+                    "implémentez ServicePSCE derrière RSA/ECDSA + "
+                    "TSA RFC 3161 (IdP OIDC pour l'auth) ; "
+                    "même contrat qu'en simulateur (production uniquement)")
+        return PSCERealStub()
     raise PSCEIndisponible(f"AGENT_STAT_PSCE_MODE invalide : {mode!r} "
                            f"(attendu dans {MODES})")
 
