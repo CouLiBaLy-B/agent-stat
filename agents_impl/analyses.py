@@ -709,6 +709,42 @@ def fabriquer_inferentiel(ctx: Contexte):
                 "comme verrouillée au SAP : grille δ et groupe pénalisé "
                 "pré-déclarés ; renversement d'effet marqué "
                 "(delta_renversement) s'il survient")
+
+        # --- ajustement Holm pour secondaires confirmatoires (pré-déclarés) ---
+        # Exécuté si ≥ 1 analyse "role":"secondaire" avec p_valeur interprétable.
+        # Holm appliqué sur les p bruts dans l'ordre de déclaration SAP.
+        # Résultat stocké hors boucle (pas une analyse du SAP mais ajustement).
+        secondaires_confirm = [
+            a for a in sap["analyses"]
+            if a.get("role") == "secondaire"
+        ]
+        if secondaires_confirm:
+            ps = []
+            ordre_ids = []
+            for ana in secondaires_confirm:
+                rid = ana["id"]
+                r = resultats.get(rid, {}).get("resultat", {})
+                if r.get("interpretable") and "p_valeur" in r:
+                    ps.append(float(r["p_valeur"]))
+                    ordre_ids.append(rid)
+            if ps:
+                holm_res = ctrl.executer(
+                    catalogue.OPS["holm"]["fn"], "holm", "1.0.0", pvals=ps)
+                resultats["A_multiplicite_holm"] = {
+                    "op_retenue": "holm",
+                    "version": "1.0.0",
+                    "role": "ajustement_multiplicite",
+                    "p_original": ps,
+                    "ids_secondaires": ordre_ids,
+                    "resultat": holm_res,
+                    "entrees": {"pvals": ps}
+                }
+                if holm_res.get("interpretable"):
+                    assumptions.append(
+                        "ajustement Holm-Bonferroni appliqué aux p-valeurs "
+                        "des analyses secondaires confirmatoires "
+                        "(FWER contrôlé, ordre SAP)")
+
         return sortie(confidence=0.92, artefacts=[art],
                       assumptions=assumptions,
                       contradictions=ajustement_refuses + sensibilite_refuses,

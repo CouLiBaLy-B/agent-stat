@@ -216,7 +216,9 @@ def fabriquer_relecture(ctx: Contexte):
                               "spec_limite", "direction",
                               # sensibilité manquants (ruban MNAR δ-ajusté)
                               "colonnes_g1", "colonnes_g2", "deltas",
-                              "groupe_ajuste")}
+                              "groupe_ajuste",
+                              # ajustement multiplicité Holm (secondaires confirmatoires)
+                              "pvals")}
             if not appel:
                 objection("entrees_absentes_du_recalcul", aid,
                           "l'artefact ne permet pas le recalcul indépendant")

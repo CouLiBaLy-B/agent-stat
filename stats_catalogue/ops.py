@@ -1008,6 +1008,57 @@ def cox_ph(temps: list[float], evenements: list[int],
         "note_lexique": "tournures d'association uniquement (⇒ relecture)"}
 
 
+# ------------------------------------------------------------------
+# Ajustement de multiplicité (Holm-Bonferroni) — pour secondaires
+# confirmatoires PRÉ-DÉCLARÉS au SAP.
+# Implémentation 100 % stdlib, déterministe, FWER contrôlé.
+# Utilisé uniquement quand endpoints_secondaires confirmatoires déclarés
+# (gabarit ou LLM) — jamais post-hoc. L'op est appelé depuis l'inférentiel
+# sur les p des analyses secondaires confirmatoires.
+# ------------------------------------------------------------------
+
+def holm(pvals: list[float], alpha: float = 0.05, seed: int = 0) -> dict:
+    """Ajustement Holm-Bonferroni (step-down) pour contrôle FWER.
+
+    pvals : liste des p-valeurs brutes des tests secondaires confirmatoires
+            (dans l'ordre de déclaration au SAP).
+    Retourne p ajustés (monotones), rejets à alpha, etc.
+    Si aucun p ou p<0 ou >1 : non interprétable (fail-closed).
+    """
+    if not pvals or not all(isinstance(p, (int, float)) and 0.0 <= float(p) <= 1.0
+                            for p in pvals):
+        return {"interpretable": False, "test": "holm",
+                "motif": "liste p-valeurs non vide de floats dans [0,1] exigée"}
+    k = len(pvals)
+    if k == 0:
+        return {"interpretable": False, "test": "holm", "motif": "k=0"}
+    # indices originaux, triés par p croissant
+    idx_sorted = sorted(range(k), key=lambda i: float(pvals[i]))
+    p_adj = [0.0] * k
+    for rank, orig_i in enumerate(idx_sorted):
+        m = k - rank
+        p_adj[orig_i] = min(1.0, float(pvals[orig_i]) * m)
+    # rendre monotone non-décroissant dans l'ordre trié (step-down)
+    for r in range(1, k):
+        prev_i = idx_sorted[r - 1]
+        curr_i = idx_sorted[r]
+        p_adj[curr_i] = max(p_adj[curr_i], p_adj[prev_i])
+    rej = [pa <= alpha for pa in p_adj]
+    return {
+        "interpretable": True,
+        "test": "holm",
+        "k": k,
+        "p_original": [float(p) for p in pvals],
+        "p_adjusted": p_adj,
+        "rejected_at_alpha": rej,
+        "alpha": alpha,
+        "methode": "holm-bonferroni-stepdown",
+        "hypothese": ("contrôle FWER fort (family-wise error rate) pour "
+                      "secondaires confirmatoires pré-déclarés — Holm plus "
+                      "puissant que Bonferroni ; lecture : rejet si p_adj <= alpha")
+    }
+
+
 # ------------------------------------------------------------------ registre
 
 OPS: dict[str, dict] = {
@@ -1041,6 +1092,7 @@ OPS: dict[str, dict] = {
     "tipping_point_mnar_smd": {"fn": lambda *a, **kw: __import__(
         "stats_catalogue.imputation", fromlist=["tipping_point_mnar_smd"]
     ).tipping_point_mnar_smd(*a, **kw), "version": "1.1.0"},
+    "holm": {"fn": holm, "version": "1.0.0"},
 }
 
 
