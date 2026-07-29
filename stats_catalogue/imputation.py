@@ -100,16 +100,20 @@ def _hedges_smd_var(g1: list[float], g2: list[float]) -> tuple[float, float]:
 def tipping_point_mnar_smd(colonnes_g1: list[list[float]],
                            colonnes_g2: list[list[float]],
                            deltas: list[float], groupe_ajuste: str = "g1",
-                           alpha: float = 0.05, seed: int = 0) -> dict:
+                           alpha: float = 0.05, seed: int = 0,
+                           deltas_unite: str = "sigma") -> dict:
     """Ruban MNAR δ-ajusté sur SMD de Hedges + tipping point.
 
     - `colonnes_g1/g2` : m copies alignées des deux groupes, déjà complétées
       (sorties de `imputer_pmm` — m ≥ 2, longueurs constantes) ;
     - `groupe_ajuste` ∈ {"g1", "g2"} : groupe dont les imputés sont
       pénalisés (typiquement celui qui porte les manquants) ; le décalage
-      est appliqué **contre l'effet observé** (−signe(θ_base)·δ·σ_réf), de
-      sorte que δ positif ATTÉNUE toujours le SMD poolé — δ est exprimé en
-      unités de σ_réf, écart-type poolé calculé sur TOUTES les copies ;
+      est appliqué **contre l'effet observé** (−signe(θ_base)·δ·factor), de
+      sorte que δ positif ATTÉNUE toujours le SMD poolé ;
+    - `deltas_unite` ∈ {"sigma", "unite"} (défaut "sigma") : la grille δ
+      peut être déclarée en unités σ (recommandé, invariant) ou en unités
+      natives de l'endpoint (cliniques). Le décalage et les transcriptions
+      (`decalage_unite`) sont toujours en unités de la variable.
     - chaque δ re-pool par `pooling_rubin` ; le champ `significatif` est
       p < alpha (t de Barnard-Rubin, comme l'inférence de base) — mesure
       BRUTE toutes directions confondues ; au-delà du point où θ traverse
@@ -122,7 +126,7 @@ def tipping_point_mnar_smd(colonnes_g1: list[list[float]],
       une pénalisation affine) : un `theta_monotone = false` signale la
       traversée, la bascule reste unique par construction ;
     - sortie : base (δ=0), ruban par δ, premier δ de bascule, transcription
-      en échelle de la variable (δ×σ_réf).
+      en échelle de la variable.
     """
     from stats_catalogue.ops import pooling_rubin
     if groupe_ajuste not in ("g1", "g2"):
@@ -134,7 +138,10 @@ def tipping_point_mnar_smd(colonnes_g1: list[list[float]],
                 "motif": "m ≥ 2 copies ALIGNÉES par groupe exigées (sorties PMM)"}
     if not deltas or any(not isinstance(d, (int, float)) for d in deltas):
         return {"interpretable": False, "test": "tipping_point_mnar_smd",
-                "motif": "grille de deltas non vide exigée (floats, σ-unités)"}
+                "motif": "grille de deltas non vide exigée (floats)"}
+    if deltas_unite not in ("sigma", "unite"):
+        return {"interpretable": False, "test": "tipping_point_mnar_smd",
+                "motif": "deltas_unite ∈ {'sigma', 'unite'} exigé"}
     if any(len(c1) != len(colonnes_g1[0]) or len(c2) != len(colonnes_g2[0])
            for c1, c2 in zip(colonnes_g1, colonnes_g2)):
         return {"interpretable": False, "test": "tipping_point_mnar_smd",
@@ -155,9 +162,10 @@ def tipping_point_mnar_smd(colonnes_g1: list[list[float]],
     signe_base = 1.0 if smd0 >= 0 else -1.0
     sens = -signe_base
 
+    factor = sp_ref if deltas_unite == "sigma" else 1.0
     ruban = []
     for d in grille:
-        decal = sens * d * sp_ref
+        decal = sens * d * factor
         proposes = []
         for c1, c2 in zip(colonnes_g1, colonnes_g2):
             if groupe_ajuste == "g1":
@@ -198,6 +206,7 @@ def tipping_point_mnar_smd(colonnes_g1: list[list[float]],
     return {"interpretable": True, "test": "tipping_point_mnar_smd",
             "m_imputations": m, "n1": n1, "n2": n2, "sigma_ref": sp_ref,
             "groupe_ajuste": groupe_ajuste, "grille_deltas": grille,
+            "deltas_unite": deltas_unite,
             "ruban": ruban, "base": base,
             "delta_bascule": tipping["delta"] if tipping else None,
             "decalage_bascule_unite": (tipping["decalage_unite"]
@@ -208,7 +217,9 @@ def tipping_point_mnar_smd(colonnes_g1: list[list[float]],
             "verdict": verdict,
             "hypothese": ("scénario MNAR δ-ajusté contre l'effet observé sur "
                           f"les imputés de {groupe_ajuste} — sensibilité "
-                          "PRÉ-DÉCLARÉE au SAP (grille, α) ; n'infirme ni ne "
-                          "confirme MAR, borne la robustesse de la conclusion"),
-            "lecture": "plus δ_bascule est grand (en σ), plus la conclusion "
-                       "est robuste à un biais MNAR systématique"}
+                          "PRÉ-DÉCLARÉE au SAP (grille, α, deltas_unite) ; "
+                          "n'infirme ni ne confirme MAR, borne la robustesse "
+                          "de la conclusion"),
+            "lecture": "plus δ_bascule est grand (en σ ou unités natives), "
+                       "plus la conclusion est robuste à un biais MNAR "
+                       "systématique"}

@@ -1089,9 +1089,12 @@ OPS: dict[str, dict] = {
     # (`renverse` par δ, `delta_renversement`, verdict explicitant l'artefact
     # de « re-significativité » au-delà de la traversée de zéro) — calculs
     # θ/se/p/ddl et bascule INVARIANTS (qualifiés, cf. docs/QUALIFICATION)
+    # 1.2.0 : deltas_unite {"sigma" (défaut), "unite"} — grille déclarable
+    # en unités cliniques natives de l'endpoint (en plus de σ). Additif,
+    # rétro-compatible, calculs et sortie invariants quand "sigma".
     "tipping_point_mnar_smd": {"fn": lambda *a, **kw: __import__(
         "stats_catalogue.imputation", fromlist=["tipping_point_mnar_smd"]
-    ).tipping_point_mnar_smd(*a, **kw), "version": "1.1.0"},
+    ).tipping_point_mnar_smd(*a, **kw), "version": "1.2.0"},
     "holm": {"fn": holm, "version": "1.0.0"},
 }
 
