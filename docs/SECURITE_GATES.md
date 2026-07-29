@@ -76,10 +76,16 @@ Invariants :
   ⇒ refus du dépôt (`PSCEIndisponible`), **aucune** dégradation silencieuse
   en SES.
 
-Branchement : `AGENT_STAT_PSCE_MODE ∈ {off, simulateur}` (défaut `off` —
+Branchement : `AGENT_STAT_PSCE_MODE ∈ {off, simulateur, real}` (défaut `off` —
 rétrocompatibilité des décisions historiques : l'absence de cachet reste
 recevable, et c'est la console qui décide d'en exiger ; tout cachet/présent
 est vérifié quel que soit le mode).
+
+- `real` : stub qui lève `PSCEIndisponible` avec message explicite. Le vrai
+  PSCQ (certificats qualifiés eIDAS, RSA/ECDSA, **TSA RFC 3161** pour
+  l'horodatage qualifié, IdP OIDC/SAML derrière `authentifier`) **doit
+  implémenter exactement** le contrat `ServicePSCE` (même que le simulateur).
+  Le mode "real" force le branchement production sans dégradation silencieuse.
 
 ## 3. Chaîne complète (prouvée par tests + `demo/run_securite_gates.py`)
 
