@@ -532,6 +532,8 @@ def fabriquer_inferentiel(ctx: Contexte):
                     "colonnes_g1": cols1, "colonnes_g2": cols2,
                     "deltas": [float(d) for d in ana.get("deltas", [0.0])],
                     "groupe_ajuste": groupe_ajuste}
+                if ana.get("deltas_unite") in ("sigma", "unite"):
+                    entrees_op["deltas_unite"] = ana["deltas_unite"]
                 if applicable:
                     op_mnar = catalogue.OPS[op]
                     res = ctrl.executer(op_mnar["fn"], op,
